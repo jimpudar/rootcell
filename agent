@@ -225,22 +225,29 @@ write_git_local_nix() {
   } > "$REPO_DIR/git-local.nix"
 }
 
-# Block until $vm is listening on $host:$port for $proto (tcp|udp).
-wait_for_listener() {
-  local vm="$1" host="$2" proto="$3" port="$4"
-  local flag i
-  if [ "$proto" = tcp ]; then flag="-tln"; else flag="-uln"; fi
-  for i in $(seq 1 60); do
-    if limactl shell "$vm" -- ss "$flag" 2>/dev/null \
-         | awk '{print $5}' | grep -q "^${host}:${port}$"; then
-      return 0
-    fi
-    sleep 1
-  done
-  log "timeout waiting for $vm to listen on $proto $host:$port"
-  limactl shell "$vm" -- journalctl --no-pager -n 50 \
-    -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq >&2
-  exit 1
+# Block until the firewall VM is listening on tcp/8080, tcp/8081, and
+# udp/53. All three checks happen inside one limactl shell call (every
+# limactl shell costs ~1s of SSH startup, which adds up if you make ~180
+# of them like the previous per-port version did).
+wait_for_firewall_listeners() {
+  local probe='
+    ip="$1"
+    for _ in $(seq 1 300); do
+      if ss -tln | grep -qF "${ip}:8080" \
+         && ss -tln | grep -qF "${ip}:8081" \
+         && ss -uln | grep -qF "${ip}:53"; then
+        exit 0
+      fi
+      sleep 0.2
+    done
+    exit 1
+  '
+  if ! limactl shell "$FIREWALL_VM" -- bash -c "$probe" _ "$FIREWALL_IP" 2>/dev/null; then
+    log "timeout waiting for firewall services on $FIREWALL_IP"
+    limactl shell "$FIREWALL_VM" -- journalctl --no-pager -n 50 \
+      -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq >&2
+    exit 1
+  fi
 }
 
 # Sync allowlist files into the firewall VM and trigger a reload.
@@ -295,9 +302,7 @@ fi
 # Sync allowlists every time so edits to proxy/allowed-*.txt take effect
 # even on a plain ./agent invocation. Cheap (a few small file copies).
 sync_allowlists
-wait_for_listener "$FIREWALL_VM" "$FIREWALL_IP" tcp 8080  # mitmproxy explicit (SSH)
-wait_for_listener "$FIREWALL_VM" "$FIREWALL_IP" tcp 8081  # mitmproxy transparent (HTTPS)
-wait_for_listener "$FIREWALL_VM" "$FIREWALL_IP" udp 53    # dnsmasq
+wait_for_firewall_listeners
 
 # --- 4. Bring up the agent VM and provision it -----------------------------
 force_agent=0

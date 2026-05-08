@@ -11,15 +11,19 @@ agent              # host entry point: brings the VM up, provisions it, execs in
 flake.nix          # inputs (nixpkgs, nixos-lima, home-manager) + outputs
 configuration.nix  # NixOS system config: bootloader, lima integration, users
 home.nix           # Home Manager config: pi + dev CLIs
-nixos.yaml         # Lima config: inherits upstream image, hardcodes hardware
+nixos.yaml         # Lima config: image pin, hardware, mounts, port forwards
 AGENTS.md          # Pi global instructions; symlinked into ~/.pi/agent/
-skills/            # Pi global skills; symlinked into ~/.pi/agent/skills/
+skills/            # Pi global skills; the directory itself is symlinked
+                   # into ~/.pi/agent/skills/
 ```
 
-The `nixos.yaml` inherits the base image and lima-guestagent setup from
-upstream nixos-lima (via Lima's `base:` field) and overrides only the
-hardware allocation locally — so memory/CPU are pinned in-repo while
-image updates still flow through.
+`nixos.yaml` is a self-contained Lima config — not a `base:` overlay. The
+nixos-lima qcow2 URL and SHA512 digest are pinned inline so updates are
+explicit, and `mounts: []` disables Lima's default host-home mount so the
+VM can't see the host filesystem. The lima-guestagent isn't pulled in by
+this file; it's enabled by the `nixos-lima.nixosModules.lima` import in
+`configuration.nix`. To pick up a newer nixos-lima image, update the URL
+and digest in `nixos.yaml` and bump the `nixos-lima` flake input together.
 
 ## One-time host setup
 
@@ -36,8 +40,9 @@ chmod +x ./agent
 ```
 
 The script is wired for **AWS Bedrock** (it exports `AWS_BEARER_TOKEN_BEDROCK`
-into the VM). If you use a different provider, edit `agent` — the Keychain
-lookup name and the env-var name are the only assumptions baked in.
+and `AWS_REGION` into the VM, defaulting the latter to `us-east-2`). If you
+use a different provider, edit `agent` — the Keychain lookup name, the env
+vars exported, and the region default are the only assumptions baked in.
 
 ## Daily use
 
@@ -83,16 +88,21 @@ limactl stop agent
 
 ## Customizing
 
-- **Adjust hardware**: edit `memory`, `cpus`, `disk` in `nixos.yaml`, then
-  `limactl stop agent && limactl start agent` (some changes require
-  `limactl delete` + a fresh `./agent`).
+- **Adjust hardware**: Lima copies `nixos.yaml` into `~/.lima/agent/lima.yaml`
+  at VM creation and reads from that copy on every subsequent start, so
+  editing the in-repo `nixos.yaml` alone has no effect on an existing VM.
+  Either run `limactl edit agent` (opens `$EDITOR` on the in-place copy) or
+  `limactl delete agent --force && ./agent` for a clean rebuild. Update the
+  in-repo `nixos.yaml` too so the next from-scratch provision matches.
 - **Add or change tools**: edit `home.packages` in `home.nix`, then
   `./agent provision`. Fast.
 - **Change OS-level config** (sudo, nix daemon, users, services): edit
   `configuration.nix`, then `./agent provision`. Slower; usually unnecessary.
-- **Change architecture**: flip `system` in `flake.nix` to `"x86_64-linux"`
-  if you're not on Apple Silicon, and update the pi tarball URL in `home.nix`
-  to match (e.g. `pi-linux-x64.tar.gz`).
+- **Change architecture**: three files in lockstep. Flip `system` in
+  `flake.nix` to `"x86_64-linux"`, update the pi tarball URL in `home.nix`
+  to match (e.g. `pi-linux-x64.tar.gz`, plus its sha256), and replace the
+  image URL / `arch` / `digest` in `nixos.yaml` with the matching x86_64
+  qcow2 from the same nixos-lima release.
 - **Change username**: edit `username` in `flake.nix` **and** `GUEST_USER`
   in `agent` so they agree.
 - **Update pi**: in `home.nix`, bump `version` in the `pi-coding-agent`
@@ -107,8 +117,9 @@ limactl stop agent
 global instructions on every session. Keep it short — its full body goes into
 the system prompt.
 
-Each `skills/<name>/SKILL.md` is symlinked into `~/.pi/agent/skills/<name>/`,
-where pi treats it as a [skill](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md):
+The whole `skills/` directory is symlinked into `~/.pi/agent/skills/`, so each
+`skills/<name>/SKILL.md` is reachable at `~/.pi/agent/skills/<name>/SKILL.md`.
+Pi treats those as [skills](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md):
 the frontmatter `description` goes into the system prompt, and the body loads
 on demand when a task matches. Add new skills by dropping more directories
 under `skills/` and running `./agent provision`.

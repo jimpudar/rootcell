@@ -40,8 +40,8 @@ set -euo pipefail
 
 # --- Configuration ----------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_VM="agent"
-FIREWALL_VM="firewall"
+AGENT_VM="${AGENT_VM_NAME:-agent}"
+FIREWALL_VM="${FIREWALL_VM_NAME:-firewall}"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
 
@@ -69,10 +69,13 @@ if [ ! -f "$REPO_DIR/.env" ] && [ -f "$REPO_DIR/.env.defaults" ]; then
   log "seeded .env from .env.defaults"
 fi
 if [ -f "$REPO_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$REPO_DIR/.env"
-  set +a
+  # Pre-existing env vars win over .env, so callers (e.g. ./test) can
+  # override the network/VM names per invocation without rewriting .env.
+  while IFS='=' read -r k v; do
+    [[ -z "$k" || "${k:0:1}" == "#" ]] && continue
+    [[ -n "${!k+x}" ]] && continue
+    export "$k=$v"
+  done < "$REPO_DIR/.env"
 fi
 
 # Apply defaults for any network var the user didn't set in .env. These

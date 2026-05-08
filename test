@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# test — smoke tests for VM provisioning and the egress firewall.
+#
+# Brings up a separate pair of VMs named `agent-test` and `firewall-test`
+# on test-only IPs (.10 firewall, .11 agent of the inter-VM subnet) so it
+# never disturbs prod VMs (defaults .2 and .3). Provisions them via
+# ./agent and runs assertions inside the test agent VM.
+#
+# Test VMs persist between runs by default — first provision is ~15 min,
+# every subsequent run is seconds. Use --clean to force a fresh build (to
+# catch first-boot regressions) or --teardown to delete them.
+#
+# Pi is exercised with `pi --help` only; no LLM call, no Bedrock tokens.
+#
+# Usage:
+#   ./test                # provision (if needed) + run all tests
+#   ./test --clean        # delete test VMs first, then provision + run
+#   ./test --teardown     # delete test VMs and exit
+#
+# Exits non-zero if any test fails.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# These names + IPs are what make the suite parallel-safe with prod VMs.
+# AGENT_VM_NAME / FIREWALL_VM_NAME are read by ./agent (see its lines 43-44).
+# FIREWALL_IP / AGENT_IP override the network.nix defaults via .env-loader
+# precedence. LIMA_NETWORK and NETWORK_PREFIX inherit from .env / defaults.
+export AGENT_VM_NAME="agent-test"
+export FIREWALL_VM_NAME="firewall-test"
+export FIREWALL_IP="192.168.106.10"
+export AGENT_IP="192.168.106.11"
+
+# --- arg parse --------------------------------------------------------------
+TEARDOWN=0
+CLEAN=0
+case "${1:-}" in
+  --teardown) TEARDOWN=1 ;;
+  --clean)    CLEAN=1 ;;
+  "") ;;
+  *) echo "usage: $0 [--teardown|--clean]" >&2; exit 2 ;;
+esac
+
+log() { printf 'test: %s\n' "$*" >&2; }
+
+# --- preflight --------------------------------------------------------------
+# Refuse to run if .env (which the user may have customized) has the prod
+# VMs claiming our test IPs. Distinct names + distinct IPs are what keep
+# us off the prod VMs' toes; this catches the only realistic collision.
+if [ -f "$REPO_DIR/.env" ] \
+   && grep -Eq "^(FIREWALL_IP=$FIREWALL_IP|AGENT_IP=$AGENT_IP)\$" "$REPO_DIR/.env"; then
+  log "your .env already uses the test IPs ($FIREWALL_IP / $AGENT_IP)."
+  log "edit .env to use different prod IPs, or run --teardown."
+  exit 1
+fi
+
+# --- teardown / clean shortcuts --------------------------------------------
+if [ "$TEARDOWN" = 1 ]; then
+  log "deleting test VMs..."
+  limactl delete -f "$AGENT_VM_NAME" "$FIREWALL_VM_NAME" 2>/dev/null || true
+  exit 0
+fi
+
+if [ "$CLEAN" = 1 ]; then
+  log "deleting test VMs for a fresh provision..."
+  limactl delete -f "$AGENT_VM_NAME" "$FIREWALL_VM_NAME" 2>/dev/null || true
+fi
+
+# --- provision via ./agent --------------------------------------------------
+log "provisioning test VMs (first run takes ~15 min)..."
+"$REPO_DIR/agent" provision
+
+# --- harness ----------------------------------------------------------------
+PASS=0
+FAIL=0
+FAILED=()
+
+run() {
+  local name="$1"; shift
+  local out rc=0
+  out=$("$@" 2>&1) || rc=$?
+  if [ $rc -eq 0 ]; then
+    printf '[PASS] %s\n' "$name"
+    PASS=$((PASS + 1))
+  else
+    printf '[FAIL] %s\n' "$name"
+    if [ -n "$out" ]; then
+      printf '  %s\n' "${out//$'\n'/$'\n  '}"
+    fi
+    FAIL=$((FAIL + 1))
+    FAILED+=("$name")
+  fi
+}
+
+agent_sh()    { limactl shell "$AGENT_VM_NAME"    -- bash -lc "$1"; }
+firewall_sh() { limactl shell "$FIREWALL_VM_NAME" -- bash -lc "$1"; }
+
+log "running tests..."
+
+# --- bucket 1: provisioning -------------------------------------------------
+run "agent VM is Running" \
+  bash -c "[ \"\$(limactl list --format '{{.Status}}' $AGENT_VM_NAME)\" = Running ]"
+
+run "firewall VM is Running" \
+  bash -c "[ \"\$(limactl list --format '{{.Status}}' $FIREWALL_VM_NAME)\" = Running ]"
+
+run "firewall services active" \
+  firewall_sh 'systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null'
+
+# A static IP on enp0s2 proves the per-VM systemd-networkd config from
+# agent-vm.nix / firewall-vm.nix actually applied. Stronger signal than
+# `hostname`, which Lima can override per-instance.
+run "agent VM has test IP on enp0s2" \
+  agent_sh "ip -4 -o addr show enp0s2 | grep -q '$AGENT_IP/'"
+
+run "firewall VM has test IP on enp0s2" \
+  firewall_sh "ip -4 -o addr show enp0s2 | grep -q '$FIREWALL_IP/'"
+
+run "home-manager dev CLIs on PATH" \
+  agent_sh 'command -v pi && command -v rg && command -v gh && command -v jq >/dev/null'
+
+# --- bucket 2: pi smoke (no LLM call) ---------------------------------------
+run "pi --help runs" \
+  agent_sh 'out=$(pi --help) && [ -n "$out" ]'
+
+# --- bucket 3: firewall HTTPS ----------------------------------------------
+run "HTTPS allowed: github.com" \
+  agent_sh 'code=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com) && [[ "$code" =~ ^[23] ]]'
+
+# example.com isn't in allowed-dns.txt, so dnsmasq returns REFUSED and
+# curl never reaches mitmproxy — denial is enforced by DNS, not SNI.
+run "HTTPS denied via DNS: example.com (curl fails)" \
+  bash -c "! limactl shell $AGENT_VM_NAME -- bash -lc 'curl -sS --max-time 10 -o /dev/null https://example.com' >/dev/null 2>&1"
+
+# pythonhosted.org IS in allowed-dns.txt (suffix match resolves the apex
+# too), but allowed-https.txt only lists files.pythonhosted.org — so
+# resolution succeeds and the request actually reaches mitmproxy, where
+# the SNI allowlist must reject it. This is the test that fails when
+# the SNI deny path isn't actually denying.
+run "HTTPS denied via SNI: pythonhosted.org (DNS-allowed, SNI-not-allowed)" \
+  bash -c "! limactl shell $AGENT_VM_NAME -- bash -lc 'curl -sS --max-time 10 -o /dev/null https://pythonhosted.org' >/dev/null 2>&1"
+
+# --- bucket 4: firewall DNS -------------------------------------------------
+run "DNS allowed: github.com resolves to an IP" \
+  agent_sh 'dig +short +time=5 +tries=1 github.com | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"'
+
+# Per proxy/reload.sh, the deny path returns REFUSED (no catch-all in
+# dnsmasq), not 0.0.0.0.
+run "DNS denied: example.com returns REFUSED" \
+  agent_sh 'dig example.com +time=5 +tries=1 2>&1 | grep -q "status: REFUSED"'
+
+# --- bucket 5: firewall SSH -------------------------------------------------
+# Any of the three matched strings means the SSH banner negotiated
+# successfully, which proves CONNECT got through mitmproxy and the SSH
+# handshake reached the upstream host.
+run "SSH allowed: github.com (CONNECT succeeds)" \
+  agent_sh 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -T git@github.com 2>&1 | grep -qE "(successfully authenticated|Permission denied|does not provide shell)"'
+
+# 1.1.1.1 avoids the DNS allowlist entirely (no name resolution needed).
+# CONNECT host is 1.1.1.1:22, which doesn't match anything in
+# proxy/allowed-ssh.txt, so mitmproxy kills the flow.
+run "SSH denied: 1.1.1.1 (ssh fails)" \
+  bash -c "! limactl shell $AGENT_VM_NAME -- bash -lc 'ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 22 root@1.1.1.1' >/dev/null 2>&1"
+
+# --- final report -----------------------------------------------------------
+printf '\n'
+printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
+if [ "$FAIL" -gt 0 ]; then
+  printf 'Failed:\n'
+  for name in "${FAILED[@]}"; do printf '  - %s\n' "$name"; done
+  exit 1
+fi

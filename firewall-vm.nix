@@ -162,6 +162,12 @@ in
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
+    # Restart when the addon source changes. mitmproxy reloads scripts on
+    # mtime, but it only re-reads function bodies — module-level state
+    # (logger handler attachment, caches) is set once at process start.
+    # Force a clean restart so addon edits actually take effect on
+    # `./agent provision`.
+    restartTriggers = [ ./proxy/mitmproxy_addon.py ];
     serviceConfig = {
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
@@ -189,6 +195,7 @@ in
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
+    restartTriggers = [ ./proxy/mitmproxy_addon.py ];
     serviceConfig = {
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"

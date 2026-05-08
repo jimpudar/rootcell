@@ -23,11 +23,24 @@ takes effect with no service restart.
 import fnmatch
 import logging
 import os
+import sys
 from mitmproxy import http, tls
 
-# mitmproxy ≥ 11 routes addon logging through stdlib `logging` instead of
-# `ctx.log`. Use a module-level logger so journalctl shows our prefix.
+# mitmproxy ≥ 11 routes addon logging through stdlib `logging`. In our
+# systemd-DynamicUser sandbox, mitmproxy's own termlog handler doesn't
+# surface our addon's records to stderr — `journalctl -u mitmproxy-…`
+# stays empty. Attach our own StreamHandler so flow decisions land in
+# the journal regardless of mitmproxy's internal logging plumbing.
+# `propagate=False` avoids duplicate lines if mitmproxy ever does fix
+# up the root logger; the handler-existence guard makes addon reload
+# (mitmproxy reloads on file mtime change) idempotent.
 logger = logging.getLogger("agent_vm_filter")
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+    logger.addHandler(_h)
 
 ALLOW_HTTPS = "/etc/agent-vm/allowed-https.txt"
 ALLOW_SSH = "/etc/agent-vm/allowed-ssh.txt"
@@ -88,9 +101,16 @@ def tls_clienthello(data: tls.ClientHelloData) -> None:
     sni = data.client_hello.sni
     if not sni or not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
         logger.warning(f"DENY https sni={sni!r}")
-        # Marking ignore_connection on a denied flow before the upstream
-        # connection is established results in the client seeing a closed
-        # tunnel. That's the desired "fail-closed" behavior.
+        # Force the passthrough path to fail closed: redirect the
+        # upstream address to a closed local port BEFORE setting
+        # ignore_connection. mitmproxy will TCP-relay to 127.0.0.1:1,
+        # immediately get connection-refused, and tear down the client
+        # tunnel. The denied SNI never sees a byte of the real
+        # destination. (Setting ignore_connection without redirecting
+        # upstream — as this addon previously did — silently relayed
+        # bytes to the original SO_ORIGINAL_DST and made the allowlist
+        # a no-op for any host that resolved through DNS.)
+        data.context.server.address = ("127.0.0.1", 1)
         data.ignore_connection = True
         return
 

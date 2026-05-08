@@ -89,6 +89,12 @@ in
     neovim
   ];
 
+  # Drop the repo-root AGENTS.md into pi's global instructions slot so every
+  # `pi` session picks it up automatically. Pi also discovers per-project
+  # AGENTS.md / CLAUDE.md by walking up from the cwd, so this file is for
+  # rules that apply VM-wide (e.g. "install software via flake.nix only").
+  home.file.".pi/agent/AGENTS.md".source = ./AGENTS.md;
+
   programs.bash = {
     enable = true;
     enableCompletion = true;

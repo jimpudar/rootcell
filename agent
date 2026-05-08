@@ -24,7 +24,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME="agent"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
-NIX_FILES=(flake.nix configuration.nix home.nix)
+NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix)
 
 # --- Subcommand parsing -----------------------------------------------------
 FORCE_PROVISION=0
@@ -87,6 +87,21 @@ fi
 
 if [ "$needs_provision" -eq 1 ]; then
   log "provisioning VM (first run takes ~10 min: nixpkgs fetch + closure build)..."
+
+  # Pass the host's git identity through to home-manager. Generated fresh each
+  # provision so it tracks any changes the user makes to ~/.gitconfig.
+  git_user_name=$(git config --global user.name 2>/dev/null || true)
+  git_user_email=$(git config --global user.email 2>/dev/null || true)
+  {
+    echo "{"
+    if [ -n "$git_user_name" ]; then
+      printf '  programs.git.userName  = "%s";\n' "$git_user_name"
+    fi
+    if [ -n "$git_user_email" ]; then
+      printf '  programs.git.userEmail = "%s";\n' "$git_user_email"
+    fi
+    echo "}"
+  } > "$REPO_DIR/git-local.nix"
 
   limactl shell "$VM_NAME" -- mkdir -p "$GUEST_REPO_DIR"
 

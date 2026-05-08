@@ -144,6 +144,12 @@ in
   # is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
 
+  # mitmproxy unconditionally materializes a `confdir` on startup (even
+  # in passthrough mode where we don't use the cert store). Default is
+  # ~/.mitmproxy, but DynamicUser+ProtectSystem leaves $HOME pointing at
+  # `/` which is read-only, so the mkdir fails. StateDirectory gives
+  # each service a private writable dir at /var/lib/<name>, and we point
+  # mitmproxy's confdir there.
   systemd.services.mitmproxy-explicit = {
     description = "mitmproxy (explicit CONNECT — for SSH ProxyCommand)";
     after = [ "network-online.target" ];
@@ -157,9 +163,11 @@ in
         "--listen-port 8080"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        "--set confdir=/var/lib/mitmproxy-explicit"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
       DynamicUser = true;
+      StateDirectory = "mitmproxy-explicit";
       ProtectSystem = "strict";
       ProtectHome = true;
       NoNewPrivileges = true;
@@ -182,9 +190,11 @@ in
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
+        "--set confdir=/var/lib/mitmproxy-transparent"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
       DynamicUser = true;
+      StateDirectory = "mitmproxy-transparent";
       ProtectSystem = "strict";
       ProtectHome = true;
       ReadOnlyPaths = "/etc/agent-vm";

@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, username, ... }:
 
 let
   net = import ./network.nix;
@@ -115,14 +115,17 @@ in
   };
 
   # ── Mutable allowlist directory ───────────────────────────────────────
-  # `./agent allow` writes here via `limactl cp`. Not in the Nix store.
-  # The dnsmasq-allowlist.conf seed below is the catch-all-NXDOMAIN line
-  # by itself — dnsmasq's pre-start check refuses to launch without the
-  # conf-file existing, but on first boot reload.sh hasn't run yet to
-  # generate the real allowlist. The `f` rule only creates if missing,
-  # so the file we write later via reload.sh is not clobbered.
+  # `./agent allow` writes here via `limactl cp`, which connects as the
+  # unprivileged Lima guest user — so the dir is owned by ${username},
+  # not root. The dnsmasq-allowlist.conf seed below is the catch-all-
+  # NXDOMAIN line by itself: dnsmasq's pre-start check refuses to launch
+  # without the conf-file existing, but on first boot reload.sh hasn't
+  # run yet to generate the real allowlist. The `f` rule only creates if
+  # missing, so the file we write later via reload.sh isn't clobbered;
+  # reload.sh runs as root (via sudo) and can overwrite root-owned files
+  # in a user-owned directory.
   systemd.tmpfiles.rules = [
-    "d /etc/agent-vm 0755 root root -"
+    "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root - address=/#/0.0.0.0"
   ];
 

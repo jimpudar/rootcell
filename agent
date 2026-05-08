@@ -337,6 +337,19 @@ if [ "$needs_agent_provision" -eq 1 ]; then
     set -e
     cd '$GUEST_REPO_DIR'
     sudo nixos-rebuild switch --flake .#agent-vm
+
+    # The first nixos-rebuild swaps the network stack (dhcpcd → networkd
+    # + resolved) and the agent VM's only DNS path becomes the firewall.
+    # nix run home-manager runs immediately after switch-to-configuration
+    # finishes, before resolved has finished picking up lima0's DNS
+    # server, which makes the next fetch fail with 'Could not resolve
+    # host'. Wait until resolution works.
+    echo 'waiting for DNS via the firewall...'
+    for _ in \$(seq 1 60); do
+      if getent hosts cache.nixos.org >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+
     nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
   "
   log "agent provisioning complete."

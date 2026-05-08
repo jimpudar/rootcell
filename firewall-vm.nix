@@ -1,10 +1,16 @@
 { config, pkgs, lib, ... }:
 
+let
+  net = import ./network.nix;
+in
+
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
 #
 # Two NICs:
 #   enp0s1  vzNAT       — internet egress (default route)
-#   lima0   lima:host   — private link to the agent VM (192.168.106.0/24)
+#   lima0   lima:host   — private link to the agent VM (default
+#                          192.168.106.0/24, overridable via .env;
+#                          IPs come from network.nix)
 #
 # Hybrid filtering — HTTPS is transparent, SSH is explicit:
 #
@@ -20,9 +26,9 @@
 #   running in regular mode on :8080. mitmproxy's addon allowlists by
 #   CONNECT host:22.
 #
-#   DNS is explicit too — the agent VM's networkConfig.DNS points at
-#   192.168.106.1 directly. dnsmasq forwards allowlisted suffixes to
-#   1.1.1.1; everything else returns 0.0.0.0.
+#   DNS is explicit too — the agent VM's networkConfig.DNS points at the
+#   firewall directly. dnsmasq forwards allowlisted suffixes to 1.1.1.1;
+#   everything else returns 0.0.0.0.
 #
 # Why two mitmproxy instances? mitmproxy listens in one mode at a time —
 # transparent expects raw redirected TCP, regular expects HTTP CONNECT.
@@ -64,7 +70,7 @@
       IPv6AcceptRA = false;
       LinkLocalAddressing = "no";
     };
-    address = [ "192.168.106.1/24" ];
+    address = [ "${net.firewallIp}/${toString net.networkPrefix}" ];
   };
 
   boot.kernel.sysctl = {
@@ -126,7 +132,7 @@
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode regular"
-        "--listen-host 192.168.106.1"
+        "--listen-host ${net.firewallIp}"
         "--listen-port 8080"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
@@ -151,7 +157,7 @@
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode transparent"
-        "--listen-host 192.168.106.1"
+        "--listen-host ${net.firewallIp}"
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
@@ -175,7 +181,7 @@
     enable = true;
     resolveLocalQueries = false;
     settings = {
-      listen-address = "192.168.106.1";
+      listen-address = net.firewallIp;
       bind-interfaces = true;
       no-resolv = true;
       domain-needed = true;

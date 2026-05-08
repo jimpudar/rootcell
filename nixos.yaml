@@ -1,8 +1,9 @@
 # Lima config for the agent VM. The agent has root inside this VM, so its
 # only network interface is the lima:host segment shared with the firewall
-# VM (192.168.106.0/24). No internet egress except through the firewall.
-# `limactl shell` works over vsock without needing a routable NIC because
-# ssh.overVsock=true is the default on vmType: vz with Linux guests.
+# VM (default 192.168.106.0/24, configurable via .env — see README).
+# No internet egress except through the firewall. `limactl shell` works
+# over vsock without needing a routable NIC because ssh.overVsock=true is
+# the default on vmType: vz with Linux guests.
 
 images:
   - location: "https://github.com/nixos-lima/nixos-lima/releases/download/v0.0.5/nixos-lima-v0.0.5-aarch64.qcow2"
@@ -34,9 +35,11 @@ containerd:
   system: false
   user: false
 
-# ONLY interface — lima:host = the private 192.168.106.0/24 segment shared
-# with the firewall VM. No vzNAT, no internet path that bypasses the
-# firewall. Static address is configured in agent-vm.nix.
+# ONLY interface — lima:host = the private segment shared with the
+# firewall VM (default 192.168.106.0/24). No vzNAT, no internet path that
+# bypasses the firewall. The Lima network name is overridden at create
+# time by `./agent` from $LIMA_NETWORK in .env; the static IPs come from
+# agent-vm.nix via network.nix.
 networks:
   - lima: host
     interface: lima0

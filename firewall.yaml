@@ -32,7 +32,9 @@ containerd:
 
 # Two NICs:
 #   vzNAT       — internet egress (Apple vmnet shared NAT)
-#   lima:host   — private 192.168.106.0/24 segment shared with agent VM
+#   lima:host   — private segment shared with agent VM (default
+#                 192.168.106.0/24; the Lima network name and IPs are
+#                 overridable via .env — see README and network.nix)
 networks:
   - vzNAT: true
   - lima: host

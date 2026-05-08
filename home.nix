@@ -9,6 +9,8 @@
 # it from macOS Keychain on the host and exports it on `limactl shell`).
 
 let
+  net = import ./network.nix;
+
   # Pi (pi.dev) ships a Bun-compiled standalone binary on each release, so
   # we don't need Node.js in the VM at all. Pinned by version + sha256 —
   # bump both fields together. Latest at:
@@ -143,7 +145,7 @@ in
   programs.ssh = {
     enable = true;
     matchBlocks."*".proxyCommand =
-      "${pkgs.netcat-openbsd}/bin/nc -X connect -x 192.168.106.1:8080 %h %p";
+      "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
     # Pre-seed known_hosts so first-run `git clone` doesn't prompt. Update
     # by running `ssh-keyscan github.com` etc. on a trusted host.
     knownHosts = {

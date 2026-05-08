@@ -2,9 +2,12 @@
 
 # Agent VM: where the coding agent runs. The agent has root inside this VM,
 # so this VM is treated as untrusted from the host's perspective. Its only
-# network interface points at the firewall VM at 192.168.106.1, which
+# network interface points at the firewall VM (net.firewallIp), which
 # enforces the egress allowlists (mitmproxy + dnsmasq).
 
+let
+  net = import ./network.nix;
+in
 {
   imports = [ ./common.nix ];
 
@@ -28,9 +31,9 @@
       IPv6AcceptRA = false;
       LinkLocalAddressing = "no";
     };
-    address = [ "192.168.106.2/24" ];
-    routes = [ { Gateway = "192.168.106.1"; } ];
-    dns = [ "192.168.106.1" ];
+    address = [ "${net.agentIp}/${toString net.networkPrefix}" ];
+    routes = [ { Gateway = net.firewallIp; } ];
+    dns = [ net.firewallIp ];
   };
 
   # Belt-and-suspenders: even if a default route appeared on something else,

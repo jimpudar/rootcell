@@ -146,26 +146,21 @@ in
     enable = true;
     matchBlocks."*".proxyCommand =
       "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
-    # Pre-seed known_hosts so first-run `git clone` doesn't prompt. Update
-    # by running `ssh-keyscan github.com` etc. on a trusted host.
-    knownHosts = {
-      github = {
-        hostNames = [ "github.com" ];
-        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
-      };
-      gitlab = {
-        hostNames = [ "gitlab.com" ];
-        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf";
-      };
-      bitbucket = {
-        hostNames = [ "bitbucket.org" ];
-        publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO";
-      };
-      azure-devops = {
-        # ssh.dev.azure.com only publishes an RSA host key (no ed25519).
-        hostNames = [ "ssh.dev.azure.com" ];
-        publicKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4NakVyIzf1rXYd4d7wo6jBlkLvCA4odBlL0mDUyZ0/QUfTTqeu+tm22gOsv+VrVTMk6vwRU75gY/y9ut5Mb3bR5BV58dKXyq9A9UeB5Cakehn5Zgm6x1mKoVyf+FFn26iYqXJRgzIZZcZ5V6hrE0Qg39kZm4az48o0AUbf6Sp4SLdvnuMa2sVNwHBboS7EJkm57XQPVU3/QpyNLHbWDdzwtrlS+ez30S3AdYhLKEOxAG8weOnyrtLJAUen9mTkol8oII1edf7mWWbWVf0nBmly21+nZcmCTISQBtdcyPaEno7fFQMDD26/s0lfKob4Kw8H";
-      };
-    };
+    # Look in our seeded read-only file in addition to the user-writable
+    # default so first-run `git clone` doesn't prompt for known hosts.
+    # home-manager's `programs.ssh.knownHosts` doesn't exist (that's a
+    # NixOS-only option); we seed manually via home.file below.
+    extraConfig = ''
+      UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts.d/seeded
+    '';
   };
+
+  # Pre-seeded SSH host keys for hosts in proxy/allowed-ssh.txt. Update by
+  # running `ssh-keyscan -t ed25519 <host>` (or `-t rsa` for ssh.dev.azure.com).
+  home.file.".ssh/known_hosts.d/seeded".text = ''
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf
+    bitbucket.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO
+    ssh.dev.azure.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4NakVyIzf1rXYd4d7wo6jBlkLvCA4odBlL0mDUyZ0/QUfTTqeu+tm22gOsv+VrVTMk6vwRU75gY/y9ut5Mb3bR5BV58dKXyq9A9UeB5Cakehn5Zgm6x1mKoVyf+FFn26iYqXJRgzIZZcZ5V6hrE0Qg39kZm4az48o0AUbf6Sp4SLdvnuMa2sVNwHBboS7EJkm57XQPVU3/QpyNLHbWDdzwtrlS+ez30S3AdYhLKEOxAG8weOnyrtLJAUen9mTkol8oII1edf7mWWbWVf0nBmly21+nZcmCTISQBtdcyPaEno7fFQMDD26/s0lfKob4Kw8H
+  '';
 }

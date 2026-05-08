@@ -25,6 +25,11 @@ tmp=${dst}.new
 } > "$tmp"
 
 mv -f "$tmp" "$dst"
-systemctl reload dnsmasq
+
+# `systemctl reload dnsmasq` sends SIGHUP, which only re-reads /etc/hosts
+# and the leases file — NOT the --conf-file=$dst. To pick up the new
+# server= lines we have to restart. dnsmasq comes back in milliseconds,
+# and `./agent allow` is interactive so the blip is acceptable.
+systemctl restart dnsmasq
 
 echo "reload: dnsmasq reconfigured ($(wc -l < "$dst") lines); mitmproxy will pick up changes on its next event."

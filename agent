@@ -24,7 +24,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME="agent"
 GUEST_USER="luser"
 GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
-NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix AGENTS.md)
+NIX_FILES=(flake.nix configuration.nix home.nix git-local.nix AGENTS.md skills)
 
 # --- Subcommand parsing -----------------------------------------------------
 FORCE_PROVISION=0
@@ -105,12 +105,14 @@ if [ "$needs_provision" -eq 1 ]; then
 
   limactl shell "$VM_NAME" -- mkdir -p "$GUEST_REPO_DIR"
 
+  # -r so directory entries in NIX_FILES (e.g. skills/) recurse; harmless
+  # for plain files.
   copy_args=()
   for f in "${NIX_FILES[@]}"; do
     copy_args+=("$REPO_DIR/$f")
   done
   copy_args+=("$VM_NAME:$GUEST_REPO_DIR/")
-  limactl cp "${copy_args[@]}"
+  limactl cp -r "${copy_args[@]}"
 
   limactl shell "$VM_NAME" -- bash -lc "
     set -e

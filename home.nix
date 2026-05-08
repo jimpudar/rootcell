@@ -89,11 +89,13 @@ in
     neovim
   ];
 
-  # Drop the repo-root AGENTS.md into pi's global instructions slot so every
-  # `pi` session picks it up automatically. Pi also discovers per-project
-  # AGENTS.md / CLAUDE.md by walking up from the cwd, so this file is for
-  # rules that apply VM-wide (e.g. "install software via flake.nix only").
+  # Pi auto-loads ~/.pi/agent/AGENTS.md as global instructions and discovers
+  # skills under ~/.pi/agent/skills/<name>/SKILL.md (progressive disclosure:
+  # only the front-matter description goes in the system prompt; pi loads
+  # the full body when a task matches). Per-project AGENTS.md/CLAUDE.md and
+  # .pi/skills/ are picked up separately by walking up from the cwd.
   home.file.".pi/agent/AGENTS.md".source = ./AGENTS.md;
+  home.file.".pi/agent/skills".source = ./skills;
 
   programs.bash = {
     enable = true;

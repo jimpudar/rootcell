@@ -179,10 +179,20 @@ in
       DynamicUser = true;
       ProtectSystem = "strict";
       ProtectHome = true;
-      NoNewPrivileges = true;
       ReadOnlyPaths = "/etc/agent-vm";
       Restart = "on-failure";
       RestartSec = "2s";
+      # Transparent mode binds the listening socket with IP_TRANSPARENT
+      # (needed even though our packets arrive via NAT REDIRECT to a local
+      # IP — mitmproxy sets the sockopt unconditionally in transparent
+      # mode). IP_TRANSPARENT requires CAP_NET_ADMIN, which DynamicUser
+      # services don't have by default. Grant it as an ambient capability
+      # so the binary inherits it without needing setcap on disk. We do
+      # NOT set NoNewPrivileges=true here because that interacts badly
+      # with AmbientCapabilities under DynamicUser; the rest of the
+      # sandbox (DynamicUser + ProtectSystem + ReadOnlyPaths) stays.
+      AmbientCapabilities = [ "CAP_NET_ADMIN" ];
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
     };
   };
 

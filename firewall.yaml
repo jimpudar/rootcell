@@ -19,9 +19,17 @@ portForwards:
 user:
   home: "/home/{{.User}}"
 
-memory: "1GiB"
+# Memory: 1 GiB suffices for the steady-state services (mitmproxy +
+# dnsmasq), but the initial `nixos-rebuild switch` peaks around 1-2 GiB
+# during nixpkgs eval and parallel substituter decompression. 4 GiB
+# avoids OOM-kill mid-build. vz balloons unused pages back to the host,
+# so this isn't 4 GiB resident on the host all the time.
+# Disk: 16 GiB lets the Nix store hold the firewall's closure plus a
+# few generations before nix-gc kicks in. After provisioning settles,
+# both can be cut back via `limactl edit firewall`.
+memory: "4GiB"
 cpus: 2
-disk: "8GiB"
+disk: "16GiB"
 
 vmType: vz
 mountType: virtiofs

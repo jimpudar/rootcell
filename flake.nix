@@ -35,6 +35,17 @@
         specialArgs = { inherit username nixos-lima; };
         modules = [ module ];
       };
+
+      # Host-side packages — only socket_vmnet today, used by `nix build`
+      # in the agent script's preflight. socket_vmnet isn't in nixpkgs,
+      # so we package it locally; see pkgs/socket_vmnet.nix and the
+      # README for why this needs an explicit one-time `sudo install`.
+      forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
+      darwinPkgs = forEachDarwin (sys:
+        let p = nixpkgs.legacyPackages.${sys};
+        in {
+          socket_vmnet = p.callPackage ./pkgs/socket_vmnet.nix { };
+        });
     in
     {
       # Two VMs share common.nix; each pulls in its own role module.
@@ -51,5 +62,10 @@
         extraSpecialArgs = { inherit username; };
         modules = [ ./home.nix ];
       };
+
+      packages = forEachDarwin (sys: {
+        socket_vmnet = darwinPkgs.${sys}.socket_vmnet;
+        default      = darwinPkgs.${sys}.socket_vmnet;
+      });
     };
 }

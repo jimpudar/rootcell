@@ -34,6 +34,7 @@ nixos.yaml         # Lima config for the agent VM (lima:host network only)
 firewall.yaml      # Lima config for the firewall VM (vzNAT + lima:host)
 .env.defaults      # checked-in defaults (AWS_REGION, network IPs); seeds .env on first run
 network.nix        # default IPs/subnet for the inter-VM link (overridable via .env)
+pkgs/socket_vmnet.nix  # Nix derivation for socket_vmnet (not in nixpkgs)
 proxy/             # the egress firewall — see proxy/README.md:
   allowed-https.txt#   SNI allowlist (fnmatch globs)
   allowed-ssh.txt  #   SSH CONNECT-host allowlist
@@ -52,17 +53,53 @@ neither VM can see the host filesystem.
 
 ## One-time host setup
 
-You need [Lima](https://lima-vm.io) installed on your Mac (`brew install lima`
-or via Nix). The `lima: host` shared network — used to wire the two VMs
-together — needs a sudoers entry so socket_vmnet can manage the bridge
-without prompting:
+You need [Lima](https://lima-vm.io) and [Nix](https://nixos.org/download)
+installed on your Mac. (`./agent` uses Nix to build `socket_vmnet` — see
+the next subsection — so Nix is non-optional now.)
+
+Three one-time things to set up. The `agent` script prints exact, paste-able
+commands the first time anything's missing, so you can also just run
+`./agent` and follow the prompts.
+
+### 1. Install `socket_vmnet`
+
+The `lima: host` shared network — the link between the agent VM and the
+firewall VM — uses macOS's `vmnet.framework`, which requires a privileged
+helper called `socket_vmnet`. Lima expects it at `/opt/socket_vmnet/bin/`
+so its sudoers grant has a stable, secure target.
+
+`socket_vmnet` isn't in nixpkgs as of writing, so this repo packages it
+itself ([pkgs/socket_vmnet.nix](pkgs/socket_vmnet.nix)) and exposes it as
+a flake package. The binary you copy is therefore Nix-built (immutable,
+root-owned in the Nix store, byte-for-byte reproducible) — but macOS won't
+let any non-root tool write under `/opt`, so the copy itself must be
+`sudo`. **This is the only imperative step in the whole setup.**
+
+`./agent` will print the exact `sudo install` command on first run with
+the right Nix-store path filled in. The pattern looks like:
+
+```bash
+nix build .#socket_vmnet                                   # builds via flake
+sudo install -m 0755 -d /opt/socket_vmnet/bin
+sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/   # the imperative bit
+```
+
+After this, `socket_vmnet` lives at `/opt/socket_vmnet/bin/socket_vmnet`,
+identical to a `make install` from upstream, and Lima recognises it. To
+upgrade later, bump `version` and `hash` in `pkgs/socket_vmnet.nix` and
+re-run the same `sudo install` — `./agent` will detect the mismatch and
+prompt.
+
+### 2. Grant Lima sudo access for `socket_vmnet`
 
 ```bash
 limactl sudoers | sudo tee /private/etc/sudoers.d/lima
 ```
 
-Stash your provider key in the macOS Keychain so `./agent` can read it on
-each invocation:
+This generates a NOPASSWD rule scoped to `/opt/socket_vmnet/bin/socket_vmnet`
+so Lima can invoke the helper without prompting per VM start.
+
+### 3. Stash your provider key in the macOS Keychain
 
 ```bash
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"

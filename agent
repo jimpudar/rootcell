@@ -27,7 +27,11 @@
 #   ./agent allow         # hot-reload allowlists into the running firewall
 #                         #   (use after editing proxy/allowed-*.txt)
 #
-# One-time host setup:
+# One-time host setup (the script prints the exact commands the first time
+# something's missing — these are listed here for reference):
+#   nix build .#socket_vmnet                         # builds the helper from this flake
+#   sudo install -m 0755 -d /opt/socket_vmnet/bin    # see ensure_socket_vmnet for the full
+#   sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/   # install command (one-time)
 #   limactl sudoers | sudo tee /private/etc/sudoers.d/lima
 #   security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
 #   chmod +x ./agent
@@ -91,9 +95,59 @@ NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
   echo "}"
 } > "$REPO_DIR/network-local.nix"
 
-# --- 1. Preflight: lima sudoers --------------------------------------------
-# `lima: host` networking requires socket_vmnet, which Lima manages but
-# needs sudo. The sudoers file is one-time host setup.
+# --- 1a. Preflight: socket_vmnet -------------------------------------------
+# Lima's `lima: host` network needs the socket_vmnet helper at a root-owned
+# path so its sudoers grant has a stable, secure target. socket_vmnet isn't
+# in nixpkgs, so this repo packages it (pkgs/socket_vmnet.nix) and exposes
+# it as `nix build .#socket_vmnet`. The binary itself is therefore Nix-
+# managed (immutable, root-owned in the store, byte-for-byte reproducible),
+# but macOS won't let any non-root tool write under /opt — that's the
+# single imperative step in the whole setup. The script builds, compares,
+# and prints a `sudo install` command if /opt/socket_vmnet is missing or
+# stale; you copy-paste, re-run, done.
+SOCKET_VMNET_DST=/opt/socket_vmnet/bin/socket_vmnet
+
+ensure_socket_vmnet() {
+  local out
+  out=$(nix build --no-link --print-out-paths "$REPO_DIR#socket_vmnet" 2>&1) || {
+    log "failed to build socket_vmnet from $REPO_DIR/pkgs/socket_vmnet.nix:"
+    printf '%s\n' "$out" >&2
+    exit 1
+  }
+  local nix_bin="$out/bin/socket_vmnet"
+
+  if [ -x "$SOCKET_VMNET_DST" ] && cmp -s "$nix_bin" "$SOCKET_VMNET_DST"; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+agent: socket_vmnet not installed (or out of date) at /opt/socket_vmnet.
+
+Why this needs sudo: Lima's sudoers grant references the binary by path,
+and macOS won't accept a sudoers rule for a user-writable location. The
+binary itself is built declaratively from this repo's flake (see
+pkgs/socket_vmnet.nix); the path below is in the Nix store and is
+root-owned and immutable. The only imperative step is the copy under
+/opt, which has to be sudo on macOS.
+
+Run:
+
+  sudo install -m 0755 -d /opt/socket_vmnet/bin
+  sudo install -m 0755 \\
+    $out/bin/socket_vmnet \\
+    $out/bin/socket_vmnet_client \\
+    /opt/socket_vmnet/bin/
+
+Then re-run ./agent.
+EOF
+  exit 1
+}
+
+ensure_socket_vmnet
+
+# --- 1b. Preflight: lima sudoers -------------------------------------------
+# Once /opt/socket_vmnet/bin/socket_vmnet exists, Lima can generate the
+# sudoers grant that lets it invoke socket_vmnet without prompting per VM.
 if [ ! -f /private/etc/sudoers.d/lima ]; then
   cat >&2 <<'EOF'
 agent: one-time host setup needed before first run.

@@ -13,15 +13,17 @@ dst=/etc/agent-vm/dnsmasq-allowlist.conf
 tmp=${dst}.new
 
 # server=/HOST/UPSTREAM forwards HOST and its subdomains to UPSTREAM.
-# address=/#/0.0.0.0 is dnsmasq's catch-all: any name not matched above
-# returns 0.0.0.0, which acts as an effective NXDOMAIN for clients that
-# treat unroutable answers as failure.
+# We deliberately do NOT add an `address=/#/0.0.0.0` catch-all: dnsmasq
+# evaluates address= rules BEFORE server= rules regardless of specificity,
+# so a wildcard address= would short-circuit every server= above and
+# return 0.0.0.0 for allowlisted names too. With no-resolv set in the
+# main config and no default `server=` line here, queries for any name
+# not matched below fail with REFUSED — that's our fail-closed default.
 {
   while IFS= read -r line; do
     [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
     echo "server=/$line/1.1.1.1"
   done < "$src"
-  echo "address=/#/0.0.0.0"
 } > "$tmp"
 
 mv -f "$tmp" "$dst"

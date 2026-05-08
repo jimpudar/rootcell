@@ -144,6 +144,10 @@ in
   # this client config doesn't touch.)
   programs.ssh = {
     enable = true;
+    # Don't pull in home-manager's default ProxyCommand/ServerAlive/etc;
+    # we only want our own matchBlocks. Silences the deprecation warning
+    # asking us to opt into the new explicit-defaults behavior.
+    enableDefaultConfig = false;
     matchBlocks."*".proxyCommand =
       "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
     # Look in our seeded read-only file in addition to the user-writable

@@ -8,7 +8,7 @@ as the only coding agent installed.
 ```
 flake.nix          # inputs (nixpkgs, nixos-lima, home-manager) + outputs
 configuration.nix  # NixOS system config: dev tooling + pi runtime deps
-home.nix           # Home Manager config: installs pi via npm
+home.nix           # Home Manager config: installs pi + dev CLIs
 nixos.yaml         # Lima config: inherits upstream image, hardcodes hardware
 ```
 
@@ -46,7 +46,8 @@ export ANTHROPIC_API_KEY=sk-...
 pi
 ```
 
-After step 5, `pi` is on your PATH via `~/.npm-global/bin`.
+After step 5, `pi` is on your PATH via the Nix store (a symlink in
+`~/.nix-profile/bin/pi`).
 
 ## The "spin up / tear down" loop
 
@@ -66,8 +67,8 @@ limactl start agent
 ```
 
 The first delete-and-recreate takes a few minutes (download base image,
-fetch nixpkgs, build closure, npm install pi). Subsequent rebuilds in the
-same VM are fast because the Nix store is cached.
+fetch nixpkgs, build closure, fetch pi release tarball). Subsequent
+rebuilds in the same VM are fast because the Nix store is cached.
 
 ## Customizing
 
@@ -84,18 +85,24 @@ same VM are fast because the Nix store is cached.
 - **Change username**: edit `username` in `flake.nix` AND pass
   `--set '.user.name = "<name>"'` to `limactl start` so the Lima-created
   user matches.
-- **Pin pi version**: in `home.nix`, change the npm install line to
-  `@earendil-works/pi-coding-agent@X.Y.Z`.
+- **Update pi**: in `home.nix`, bump `version` in the `pi-coding-agent`
+  derivation and update `sha256` to match. Get the new hash with
+  `nix-prefetch-url <release-url>` or by computing it from the downloaded
+  tarball (`sha256sum pi-linux-arm64.tar.gz`). Latest release at
+  https://github.com/badlogic/pi-mono/releases.
 
-## Why pi gets installed via npm activation, not as a Nix package
+## How pi gets installed
 
-Pi isn't packaged in nixpkgs (yet). The cleanest declarative alternative
-would be `buildNpmPackage`, but that requires checking in a lockfile and
-re-vendoring on every upstream release. For a tool that updates frequently
-and lives in a disposable VM, an idempotent `npm install -g` from a Home
-Manager activation is the pragmatic choice — still declarative from your
-perspective (one line in `home.nix` controls it), without the maintenance
-overhead.
+Pi ships a Bun-compiled standalone binary on each GitHub release, so we
+fetch the release tarball directly via `pkgs.fetchurl` and wrap it in a
+small `stdenv.mkDerivation`. `autoPatchelfHook` rewrites the binary's
+ELF interpreter to point at glibc inside the Nix store (NixOS doesn't
+have `/lib64/ld-linux-aarch64.so.1`), and the runtime assets that ship
+alongside `pi` (theme, export-html, wasm) are kept as siblings under
+`$out/share/pi-coding-agent/` so the binary can find them.
+
+Net result: pi is a fully declarative, fully reproducible Nix package,
+pinned by SHA256. No Node.js, no npm, no impure activation step.
 
 ## Secrets
 

@@ -70,9 +70,9 @@
   # `programs.git.enable` adds git itself, so we don't list it above.
   programs.git = {
     enable = true;
-    userName  = lib.mkDefault "agent";
-    userEmail = lib.mkDefault "agent@localhost";
-    extraConfig = {
+    settings = {
+      user.name  = lib.mkDefault "agent";
+      user.email = lib.mkDefault "agent@localhost";
       init.defaultBranch = "main";
       pull.rebase = true;
     };

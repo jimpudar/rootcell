@@ -95,10 +95,10 @@ if [ "$needs_provision" -eq 1 ]; then
   {
     echo "{"
     if [ -n "$git_user_name" ]; then
-      printf '  programs.git.userName  = "%s";\n' "$git_user_name"
+      printf '  programs.git.settings.user.name  = "%s";\n' "$git_user_name"
     fi
     if [ -n "$git_user_email" ]; then
-      printf '  programs.git.userEmail = "%s";\n' "$git_user_email"
+      printf '  programs.git.settings.user.email = "%s";\n' "$git_user_email"
     fi
     echo "}"
   } > "$REPO_DIR/git-local.nix"

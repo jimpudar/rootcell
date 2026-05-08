@@ -100,6 +100,10 @@ in
   programs.bash = {
     enable = true;
     enableCompletion = true;
+    shellAliases = {
+      vi = "nvim";
+      vim = "nvim";
+    };
   };
 
   # direnv + nix-direnv: drop a flake.nix in any project dir and have its

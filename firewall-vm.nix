@@ -134,6 +134,14 @@ in
   # systemd's strict sandboxing can read. It stats the allowlist files on
   # every event and reloads on mtime change, so `./agent allow` takes
   # effect with no service restart.
+  #
+  # Both services bind 0.0.0.0 (not net.firewallIp) — even with
+  # `After=network-online.target`, mitmproxy can race ahead of
+  # systemd-networkd assigning lima0's static address and bind() fails
+  # with "could not bind on any address". 0.0.0.0 sidesteps the race
+  # without weakening the security boundary: networking.firewall (above)
+  # only allows TCP/8080 and TCP/8081 inbound on lima0, so the agent VM
+  # is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
 
   systemd.services.mitmproxy-explicit = {
@@ -145,7 +153,7 @@ in
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode regular"
-        "--listen-host ${net.firewallIp}"
+        "--listen-host 0.0.0.0"
         "--listen-port 8080"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
@@ -170,7 +178,7 @@ in
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode transparent"
-        "--listen-host ${net.firewallIp}"
+        "--listen-host 0.0.0.0"
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"

@@ -60,3 +60,19 @@ both `allowed-dns.txt` and `allowed-https.txt`.
   proxy passes TLS through after checking the SNI.
 - Retrying the same call — DNS REFUSED and SNI denial are fail-closed
   and won't change on their own.
+
+## Never use insecure / cert-skipping mode
+
+If a TLS call fails with a cert verification error, **do not** retry
+with `curl -k` / `--insecure`, `wget --no-check-certificate`,
+`NODE_TLS_REJECT_UNAUTHORIZED=0`, `git -c http.sslVerify=false`,
+`pip --trusted-host`, `GIT_SSL_NO_VERIFY=1`, Python `verify=False`,
+or any equivalent.
+
+Why: the firewall passes real upstream certs through for allowlisted
+SNIs. A cert verify failure inside this VM means the SNI was rejected
+(common cause: the allowlist entry is the apex `example.com` but you
+hit `www.example.com` — fnmatch doesn't match across the dot, so add
+`*.example.com` too). Bypassing the verification defeats the
+firewall's allowlist for that call. Stop and ask the user to add the
+host instead.

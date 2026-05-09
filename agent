@@ -94,8 +94,8 @@ fi
 # Apply defaults for any network var the user didn't set in .env. These
 # match the defaults in network.nix so a stale .env still works.
 LIMA_NETWORK="${LIMA_NETWORK:-host}"
-FIREWALL_IP="${FIREWALL_IP:-192.168.106.1}"
-AGENT_IP="${AGENT_IP:-192.168.106.2}"
+FIREWALL_IP="${FIREWALL_IP:-192.168.106.2}"
+AGENT_IP="${AGENT_IP:-192.168.106.3}"
 NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
 
 # Generate network-local.nix from the resolved values. Mirrors how

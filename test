@@ -152,6 +152,45 @@ run "HTTPS denied via DNS: example.com (curl fails)" \
 run "HTTPS denied via SNI: pythonhosted.org (DNS-allowed, SNI-not-allowed)" \
   bash -c "! limactl shell $AGENT_VM_NAME -- bash -lc 'curl -sS --max-time 10 -o /dev/null https://pythonhosted.org' >/dev/null 2>&1"
 
+# Critical: the SNI deny path must fail closed even for clients that
+# skip TLS verification. If mitmproxy generates its own cert for a
+# denied SNI AND still relays bytes to the real upstream, `curl -k`
+# (or any tool that ignores cert errors) silently bypasses the
+# allowlist. The previous SNI deny test only catches this regression
+# when the client actually validates certs.
+deny_sni_no_bypass_with_insecure_curl() {
+  local out
+  out=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sk --max-time 10 -o /dev/null -w "%{http_code}:%{size_download}" https://pythonhosted.org' 2>&1) || out="$out (curl exit $?)"
+  case "$out" in
+    000:0|*:0) return 0 ;;
+    *)
+      echo "deny path leaked: curl -k against denied SNI returned $out"
+      return 1
+      ;;
+  esac
+}
+run "HTTPS deny path: insecure curl (-k) yields no upstream bytes" \
+  deny_sni_no_bypass_with_insecure_curl
+
+# Companion check: the cert presented to the agent for a denied SNI
+# must not be a mitmproxy-issued cert. Mitmproxy issuing a cert at
+# all means it terminated TLS — that's the foothold the -k bypass
+# exploits. The deny path should reset the connection before the
+# server hello, not hand the client a fake cert.
+deny_sni_no_mitmproxy_cert() {
+  local out
+  out=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -skv --max-time 10 -o /dev/null https://pythonhosted.org 2>&1 | grep -i issuer') || true
+  if echo "$out" | grep -qi 'mitmproxy'; then
+    echo "denied SNI received a mitmproxy-issued cert: $out"
+    return 1
+  fi
+  return 0
+}
+run "HTTPS deny path: no mitmproxy-issued cert for denied SNI" \
+  deny_sni_no_mitmproxy_cert
+
 # --- bucket 4: firewall DNS -------------------------------------------------
 run "DNS allowed: github.com resolves to an IP" \
   agent_sh 'dig +short +time=5 +tries=1 github.com | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"'

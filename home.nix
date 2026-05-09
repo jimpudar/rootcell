@@ -104,6 +104,15 @@ in
   home.file.".pi/agent/skills/add-flake-dep".source     = ./pi/agent/skills/add-flake-dep;
   home.file.".pi/agent/skills/network-allowlist".source = ./pi/agent/skills/network-allowlist;
 
+  # Pi extensions live under ~/.pi/agent/extensions/<name>/. Same per-entry
+  # symlink rationale as skills above: keep the parent dir real so any
+  # extensions the user adds at runtime survive `home-manager switch`. The
+  # `subagent` example ships inside the pi-coding-agent release tarball, so
+  # point at the copy already present in the derivation's $out/share tree
+  # rather than vendoring it.
+  home.file.".pi/agent/extensions/subagent".source =
+    "${pi-coding-agent}/share/pi-coding-agent/examples/extensions/subagent";
+
   programs.bash = {
     enable = true;
     enableCompletion = true;

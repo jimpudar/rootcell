@@ -187,6 +187,21 @@ in
     '';
   };
 
+  # Generate a per-VM SSH key on first provision so `git push git@github.com:...`
+  # works from inside the VM. RSA-4096 (not ed25519) because Azure DevOps still
+  # rejects ed25519 keys. Idempotent — guarded on file absence, so re-running
+  # `home-manager switch` never replaces an existing key. The private key stays
+  # inside the VM; only the .pub is meant to leave (via `./agent pubkey`).
+  home.activation.generateAgentVmSshKey = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    if [ ! -f "$HOME/.ssh/id_rsa" ]; then
+      mkdir -p "$HOME/.ssh"
+      chmod 0700 "$HOME/.ssh"
+      ${pkgs.openssh}/bin/ssh-keygen -t rsa -b 4096 -N "" \
+        -C "agent-vm" \
+        -f "$HOME/.ssh/id_rsa"
+    fi
+  '';
+
   # Pre-seeded SSH host keys for hosts in proxy/allowed-ssh.txt. Update by
   # running `ssh-keyscan -t ed25519 <host>` (or `-t rsa` for ssh.dev.azure.com).
   home.file.".ssh/known_hosts.d/seeded".text = ''

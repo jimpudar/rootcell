@@ -367,6 +367,29 @@ time, never persist.
 
 Don't put any provider key in `home.nix` — the Nix store is world-readable.
 
+## Pushing to GitHub
+
+The agent VM generates its own RSA SSH keypair on first provision (RSA, not
+ed25519, so it works with Azure DevOps too — Azure's SSH endpoint still
+rejects ed25519). The private key lives only inside the VM and stays stable
+across `./agent provision` runs; it's regenerated only if you delete and
+recreate the VM.
+
+After first provision, `./agent` prints the public key. Register it at
+https://github.com/settings/keys (or as a per-repo Deploy key), and `git push`
+will work over SSH from inside the VM. `github.com` is already on the SSH
+allowlist and its host key is pre-seeded.
+
+To print the key again later:
+
+```bash
+./agent pubkey
+```
+
+For other forges (GitLab, Bitbucket, Azure DevOps), they're already on
+`proxy/allowed-ssh.txt.defaults` — register the same pubkey there and use
+`git@host:owner/repo.git` URLs.
+
 ## Linux portability
 
 The architecture transfers cleanly. On Linux, change `vmType: vz` →

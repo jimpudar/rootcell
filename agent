@@ -26,6 +26,7 @@
 #   ./agent provision     # re-copy files and re-rebuild both VMs
 #   ./agent allow         # hot-reload allowlists into the running firewall
 #                         #   (use after editing proxy/allowed-*.txt)
+#   ./agent pubkey        # print the agent VM's SSH public key
 #
 # One-time host setup (the script prints the exact commands the first time
 # something's missing — these are listed here for reference):
@@ -61,6 +62,7 @@ SUBCMD=""
 case "${1:-}" in
   provision) SUBCMD=provision; shift ;;
   allow)     SUBCMD=allow; shift ;;
+  pubkey)    SUBCMD=pubkey; shift ;;
 esac
 
 # --- 0. Seed and load .env, seed allowlists --------------------------------
@@ -110,6 +112,25 @@ NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
   printf '  limaNetwork   = "%s";\n' "$LIMA_NETWORK"
   echo "}"
 } > "$REPO_DIR/network-local.nix"
+
+# --- Subcommand: pubkey ----------------------------------------------------
+# Read-only dump of the agent VM's SSH public key. Placed before the
+# socket_vmnet / sudoers preflights so a stale host setup doesn't block
+# this from working — `limactl shell` against a running VM doesn't need
+# either. The key is generated on first provision by home-manager (see
+# home.nix `generateAgentVmSshKey`) and stays stable across re-provisions.
+if [ "$SUBCMD" = pubkey ]; then
+  status=$(limactl list --format '{{.Status}}' "$AGENT_VM" 2>/dev/null || true)
+  if [ "$status" != Running ]; then
+    log "agent VM not running; start it with ./agent first."
+    exit 1
+  fi
+  if ! limactl shell "$AGENT_VM" -- test -f "/home/$GUEST_USER/.ssh/id_rsa.pub" 2>/dev/null; then
+    log "no SSH key in agent VM yet; run ./agent provision first."
+    exit 1
+  fi
+  exec limactl shell "$AGENT_VM" -- cat "/home/$GUEST_USER/.ssh/id_rsa.pub"
+fi
 
 # --- 1a. Preflight: socket_vmnet -------------------------------------------
 # Lima's `lima: host` network needs the socket_vmnet helper at a root-owned
@@ -356,6 +377,22 @@ if [ "$needs_agent_provision" -eq 1 ]; then
     nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
   "
   log "agent provisioning complete."
+
+  # Surface the per-VM SSH pubkey so the user can register it on GitHub.
+  # home-manager activation generates it on first run and leaves it alone
+  # afterward (see home.nix `generateAgentVmSshKey`), so re-provisions
+  # print the same key — handy as a reminder, not noise.
+  pubkey=$(limactl shell "$AGENT_VM" -- cat "/home/$GUEST_USER/.ssh/id_rsa.pub")
+  cat >&2 <<EOF
+
+agent: this VM's SSH public key (register at https://github.com/settings/keys
+to enable \`git push git@github.com:...\` from inside the VM):
+
+$pubkey
+
+Run \`./agent pubkey\` to print it again.
+
+EOF
 fi
 
 if [ "$SUBCMD" = provision ]; then

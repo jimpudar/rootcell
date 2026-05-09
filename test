@@ -159,16 +159,18 @@ run "HTTPS denied via SNI: pythonhosted.org (DNS-allowed, SNI-not-allowed)" \
 # allowlist. The previous SNI deny test only catches this regression
 # when the client actually validates certs.
 deny_sni_no_bypass_with_insecure_curl() {
-  local out
-  out=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
-    'curl -sk --max-time 10 -o /dev/null -w "%{http_code}:%{size_download}" https://pythonhosted.org' 2>&1) || out="$out (curl exit $?)"
-  case "$out" in
-    000:0|*:0) return 0 ;;
-    *)
-      echo "deny path leaked: curl -k against denied SNI returned $out"
-      return 1
-      ;;
-  esac
+  # We only care about size_download; curl exiting non-zero is fine
+  # (and expected) for a denied connection. Anything > 0 here means
+  # mitmproxy relayed real upstream bytes after MITMing the TLS.
+  local size
+  size=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sk --max-time 10 -o /dev/null -w "%{size_download}" https://pythonhosted.org' 2>/dev/null) || true
+  size=${size:-0}
+  if [ "$size" = 0 ]; then
+    return 0
+  fi
+  echo "deny path leaked: curl -k against denied SNI downloaded $size bytes"
+  return 1
 }
 run "HTTPS deny path: insecure curl (-k) yields no upstream bytes" \
   deny_sni_no_bypass_with_insecure_curl

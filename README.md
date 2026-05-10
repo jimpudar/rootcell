@@ -240,6 +240,18 @@ put either VM at that address (see network.nix for the gory detail).
 The name (`host2` here) is what you'll reference in `.env`. Subnet must
 not overlap any other entry on this Mac.
 
+**Mirror this file in the first account.** `networks.yaml` is per-user,
+but `/private/etc/sudoers.d/lima` (step 2 of the global setup) is
+system-wide, and `limactl start` checks that the on-disk sudoers exactly
+matches what *the current account's* `limactl sudoers` would emit right
+now. The output bakes in every gateway/netmask from `networks.yaml`, so
+two accounts with different YAML keep tripping each other's "sudoers
+file is out of sync" check whenever they switch back. Easiest fix: copy
+the new `networks.yaml` over to the first account too. The extra `host2`
+entry is harmless there — it only matters when something references it
+via `LIMA_NETWORK`. Then re-run `limactl sudoers | sudo tee
+/private/etc/sudoers.d/lima` once and both accounts agree.
+
 ### 2. Override the four network variables in `.env`
 
 `./agent` seeds `.env` from `.env.defaults` on first run. Edit `.env`

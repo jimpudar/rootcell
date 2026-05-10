@@ -40,7 +40,20 @@
 set -euo pipefail
 
 # --- Configuration ----------------------------------------------------------
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+resolve_script_dir() {
+  local source dir
+  source="${BASH_SOURCE[0]}"
+
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" == /* ]] || source="$dir/$source"
+  done
+
+  cd -P "$(dirname "$source")" && pwd
+}
+
+REPO_DIR="$(resolve_script_dir)"
 AGENT_VM="${AGENT_VM_NAME:-agent}"
 FIREWALL_VM="${FIREWALL_VM_NAME:-firewall}"
 GUEST_USER="luser"

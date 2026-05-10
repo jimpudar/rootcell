@@ -12,19 +12,27 @@ in
 #                          192.168.106.0/24, overridable via .env;
 #                          IPs come from network.nix)
 #
-# Hybrid filtering — HTTPS is transparent, SSH is explicit, HTTP is denied:
+# Hybrid filtering — HTTPS is intercepted, SSH is explicit, HTTP is denied:
 #
 #   HTTPS traffic from the agent VM is intercepted by nftables NAT
 #   PREROUTING REDIRECT (TCP 443 → local :8081), so the agent VM's
 #   `curl https://github.com` works without any proxy env vars. mitmproxy
 #   in transparent mode reads the original destination via SO_ORIGINAL_DST
-#   and the SNI from the TLS ClientHello, then either kills the connection
-#   (deny) or relays raw bytes (allow — no MITM).
+#   and the SNI from the TLS ClientHello. If the SNI is in the allowlist
+#   mitmproxy terminates TLS (using our per-deployment CA, trusted by the
+#   agent VM via security.pki.certificateFiles) and opens a NEW TLS
+#   connection upstream, validating the upstream cert against the SNI/Host.
+#   That validation is the whole point of the MITM: with passthrough, a
+#   client cooperating with the exfil endpoint could send SNI=github.com
+#   while routing the TCP to attacker IP, and `curl -k` would accept the
+#   attacker's cert. With MITM, mitmproxy is the TLS *client* upstream and
+#   the attacker IP can't produce a valid github.com cert.
 #
 #   SSH is explicit. The agent VM's `programs.ssh.matchBlocks` (in home.nix)
 #   sets a ProxyCommand that opens an HTTP CONNECT tunnel to mitmproxy
 #   running in regular mode on :8080. mitmproxy's addon allowlists by
-#   CONNECT host:22.
+#   CONNECT host:22. SSH is not MITM'd — that would break key-based auth
+#   from inside the VM.
 #
 #   Cleartext HTTP (TCP/80) is NOT proxied and NOT forwarded. The HTTP
 #   `Host` header is unauthenticated — a client can claim any allowlisted
@@ -141,6 +149,15 @@ in
   # `f` rule only creates if missing, so the file we write later via
   # reload.sh isn't clobbered; reload.sh runs as root (via sudo) and
   # can overwrite root-owned files in a user-owned directory.
+  #
+  # The CA pem (key + cert) for TLS MITM is staged here too, but
+  # written by `./agent` via `limactl cp /tmp + sudo install -m 0600
+  # -o root -g root` — never touchable by the lima user (who has
+  # passwordless sudo, but the explicit ownership chmod makes the
+  # blast radius "must already be root" rather than "any read of
+  # /etc/agent-vm leaks the key"). Loaded into the mitmproxy services
+  # via systemd LoadCredential, which surfaces it as a tmpfs file
+  # readable only by the service uid.
   systemd.tmpfiles.rules = [
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
@@ -161,17 +178,34 @@ in
   # is still the only thing that can reach these ports.
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
 
-  # mitmproxy unconditionally materializes a `confdir` on startup (even
-  # in passthrough mode where we don't use the cert store). Default is
-  # ~/.mitmproxy, but DynamicUser+ProtectSystem leaves $HOME pointing at
-  # `/` which is read-only, so the mkdir fails. StateDirectory gives
-  # each service a private writable dir at /var/lib/<name>, and we point
-  # mitmproxy's confdir there.
+  # mitmproxy unconditionally materializes a `confdir` on startup. It
+  # also LOOKS in confdir for `mitmproxy-ca.pem`; if present it uses
+  # that as the signing CA, otherwise it auto-generates one. We want
+  # mitmproxy to use OUR CA (the one whose public cert the agent VM
+  # trusts), so we:
+  #
+  #   1. Stage the key+cert pem at /etc/agent-vm/agent-vm-ca.pem
+  #      (root-owned, mode 0600, written by `./agent`).
+  #   2. systemd LoadCredential reads it as root and surfaces it under
+  #      $CREDENTIALS_DIRECTORY (a per-service tmpfs that only the
+  #      service uid can read).
+  #   3. ExecStartPre copies the credential into the per-service
+  #      RuntimeDirectory (which IS writable, unlike the credentials
+  #      tmpfs mitmproxy can't write its own runtime artifacts into).
+  #   4. mitmproxy is launched with --set confdir pointing at the
+  #      RuntimeDirectory and finds mitmproxy-ca.pem already there.
+  #
+  # ConditionPathExists guards the bootstrap window: on the very first
+  # nixos-rebuild the CA is not yet copied in (./agent does that AFTER
+  # rebuild — we can't `limactl cp` to /etc/agent-vm/ before tmpfiles
+  # creates the dir), so the services skip cleanly. ./agent then pushes
+  # the CA and `systemctl restart`s, which re-evaluates the condition.
   systemd.services.mitmproxy-explicit = {
     description = "mitmproxy (explicit CONNECT — for SSH ProxyCommand)";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
+    unitConfig.ConditionPathExists = "/etc/agent-vm/agent-vm-ca.pem";
     # Restart when the addon source changes. mitmproxy reloads scripts on
     # mtime, but it only re-reads function bodies — module-level state
     # (logger handler attachment, caches) is set once at process start.
@@ -179,6 +213,9 @@ in
     # `./agent provision`.
     restartTriggers = [ ./proxy/mitmproxy_addon.py ];
     serviceConfig = {
+      LoadCredential = "mitmproxy-ca.pem:/etc/agent-vm/agent-vm-ca.pem";
+      RuntimeDirectory = "mitmproxy-explicit";
+      ExecStartPre = "${pkgs.coreutils}/bin/install -m 0400 %d/mitmproxy-ca.pem %t/mitmproxy-explicit/mitmproxy-ca.pem";
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode regular"
@@ -187,21 +224,16 @@ in
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
         # Defer opening the upstream TCP connection until after our addon
-        # runs. With the default "eager", mitmproxy opens the upstream at
-        # SO_ORIGINAL_DST before tls_clienthello fires; by the time the
-        # addon tries to redirect denied SNIs to a black hole,
-        # Server.__setattr__ raises (the connection is already OPEN), the
-        # exception is swallowed by the hook dispatcher, and ignore_connection
-        # stays False — so mitmproxy proceeds with a full MITM and a CN=mitmproxy
-        # cert, while still relaying bytes to the real upstream. That made
-        # `curl -k` a complete allowlist bypass. With lazy, the address
-        # rewrite in the deny path actually takes effect.
+        # runs. Originally needed for the SNI deny path's address rewrite
+        # to take effect (the default "eager" strategy opens the upstream
+        # before tls_clienthello fires, and Server.address can't be mutated
+        # on an already-open connection). Still required: with MITM, the
+        # addon may decide to deny based on SNI before any upstream open.
         "--set connection_strategy=lazy"
-        "--set confdir=/var/lib/mitmproxy-explicit"
+        "--set confdir=%t/mitmproxy-explicit"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
       DynamicUser = true;
-      StateDirectory = "mitmproxy-explicit";
       ProtectSystem = "strict";
       ProtectHome = true;
       NoNewPrivileges = true;
@@ -216,8 +248,12 @@ in
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
+    unitConfig.ConditionPathExists = "/etc/agent-vm/agent-vm-ca.pem";
     restartTriggers = [ ./proxy/mitmproxy_addon.py ];
     serviceConfig = {
+      LoadCredential = "mitmproxy-ca.pem:/etc/agent-vm/agent-vm-ca.pem";
+      RuntimeDirectory = "mitmproxy-transparent";
+      ExecStartPre = "${pkgs.coreutils}/bin/install -m 0400 %d/mitmproxy-ca.pem %t/mitmproxy-transparent/mitmproxy-ca.pem";
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.mitmproxy}/bin/mitmdump"
         "--mode transparent"
@@ -225,22 +261,11 @@ in
         "--listen-port 8081"
         "--set termlog_verbosity=warn"
         "--set flow_detail=0"
-        # Defer opening the upstream TCP connection until after our addon
-        # runs. With the default "eager", mitmproxy opens the upstream at
-        # SO_ORIGINAL_DST before tls_clienthello fires; by the time the
-        # addon tries to redirect denied SNIs to a black hole,
-        # Server.__setattr__ raises (the connection is already OPEN), the
-        # exception is swallowed by the hook dispatcher, and ignore_connection
-        # stays False — so mitmproxy proceeds with a full MITM and a CN=mitmproxy
-        # cert, while still relaying bytes to the real upstream. That made
-        # `curl -k` a complete allowlist bypass. With lazy, the address
-        # rewrite in the deny path actually takes effect.
         "--set connection_strategy=lazy"
-        "--set confdir=/var/lib/mitmproxy-transparent"
+        "--set confdir=%t/mitmproxy-transparent"
         "-s /etc/agent-vm/mitmproxy_addon.py"
       ];
       DynamicUser = true;
-      StateDirectory = "mitmproxy-transparent";
       ProtectSystem = "strict";
       ProtectHome = true;
       ReadOnlyPaths = "/etc/agent-vm";

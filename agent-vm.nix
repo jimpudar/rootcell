@@ -61,4 +61,33 @@ in
   # dropped on the firewall, because HTTP `Host` is unauthenticated and
   # can't be allowlisted safely. All egress must be HTTPS or SSH. SSH
   # still uses an explicit ProxyCommand — see programs.ssh in home.nix.
+  #
+  # The firewall VM's mitmproxy now terminates TLS for allowlisted hosts
+  # (it was passthrough before) and presents per-host certs minted by a
+  # per-deployment CA. Trust that CA system-wide so curl/git/openssl
+  # accept the minted certs without `--insecure`. The cert is shipped
+  # in by ./agent (see AGENT_NIX_FILES); the matching key never leaves
+  # the host or the firewall VM.
+  #
+  # Why MITM instead of passthrough: passthrough binds the bytes only to
+  # the SNI in the ClientHello, not to the upstream identity. A client
+  # cooperating with an exfil endpoint could send SNI=allowed.com but
+  # route the TCP to attacker IP, and `curl -k` (or any client that
+  # tolerates cert errors) would establish a clean tunnel. With MITM,
+  # mitmproxy is the TLS *client* upstream and the attacker IP can't
+  # produce a valid allowed.com cert — so no bytes flow.
+  security.pki.certificateFiles = [ ./agent-vm-ca-cert.pem ];
+
+  # Common SDK trust-store env vars. NixOS's security.pki.certificateFiles
+  # adds the CA to /etc/ssl/certs/ca-certificates.crt, which curl, git,
+  # and OpenSSL pick up automatically. Node, Python `requests`, and a few
+  # other ecosystems read their CA bundle from a hardcoded path or env
+  # var instead, so set those explicitly. Pi, Claude Code, Codex, etc.
+  # are all Node CLIs — without NODE_EXTRA_CA_CERTS they'd fail TLS to
+  # every allowlisted host the moment MITM is enabled.
+  environment.variables = {
+    NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/ca-certificates.crt";
+    SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
+    REQUESTS_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+  };
 }

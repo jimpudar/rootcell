@@ -200,6 +200,73 @@ deny_sni_no_mitmproxy_cert() {
 run "HTTPS deny path: no mitmproxy-issued cert for denied SNI" \
   deny_sni_no_mitmproxy_cert
 
+# With full MITM enabled, the agent VM's curl must accept mitmproxy-
+# minted certs for allowed hosts WITHOUT --insecure. This proves that
+# (a) our CA cert is in the agent VM's system trust store, and (b)
+# mitmproxy is actually intercepting (not passthrough). A passthrough-
+# era github.com test would also pass without -k, so we strengthen the
+# signal by additionally checking the cert issuer is our CA.
+allowed_https_cert_is_ours() {
+  local issuer
+  issuer=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sSv --max-time 10 -o /dev/null https://github.com 2>&1 | grep -i "issuer:" | head -n1') || true
+  if echo "$issuer" | grep -q "agent-vm proxy CA"; then
+    return 0
+  fi
+  echo "expected mitmproxy-minted cert (issuer=agent-vm proxy CA), got: $issuer"
+  return 1
+}
+run "HTTPS allowed: cert issuer is our deployment CA (proves MITM is on)" \
+  allowed_https_cert_is_ours
+
+# The whole point of MITM: a client that sends an allowlisted SNI but
+# routes the TCP to a non-allowlisted IP must fail. Without MITM
+# (passthrough), `curl -k` against `--resolve allowed.com:443:evil.ip`
+# would happily complete the TLS handshake to evil.ip presenting its
+# own cert. With MITM, mitmproxy opens upstream as the real allowed.com
+# and validates the cert — evil.ip can't produce a valid cert, so the
+# upstream connection fails and curl gets nothing. We use 1.1.1.1 as
+# the "evil" IP — it's reachable (DNS-bypassed), serves TLS, but its
+# cert is for *.cloudflare-dns.com, not github.com.
+sni_pinned_to_upstream_identity() {
+  local size
+  size=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sk --max-time 10 -o /dev/null -w "%{size_download}" \
+       --resolve github.com:443:1.1.1.1 https://github.com' 2>/dev/null) || true
+  size=${size:-0}
+  if [ "$size" = 0 ]; then
+    return 0
+  fi
+  echo "MITM bypass: SNI=github.com routed to 1.1.1.1 leaked $size bytes"
+  return 1
+}
+run "HTTPS MITM: SNI-vs-upstream-IP mismatch denied" \
+  sni_pinned_to_upstream_identity
+
+# Companion check at the HTTP layer: open TLS with allowlisted SNI to
+# the legitimate upstream, but send a Host header for a different
+# (also-allowlisted) host. Some shared-infra exfil channels rely on
+# routing by Host on the upstream — even if both names are allowed,
+# Host must agree with SNI or we let cross-tenant requests through.
+host_must_agree_with_sni() {
+  # api.github.com is the SNI/connect target; Host header overridden to
+  # objects.githubusercontent.com (also in allowed-https.txt). A 4xx
+  # body or any download means the firewall accepted the mismatch.
+  local code
+  code=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sS --max-time 10 -o /dev/null -w "%{http_code}" \
+       -H "Host: objects.githubusercontent.com" \
+       https://api.github.com/' 2>/dev/null) || true
+  # On deny, mitmproxy kills the flow → curl gets RST → http_code=000.
+  if [ "$code" = "000" ] || [ -z "$code" ]; then
+    return 0
+  fi
+  echo "Host/SNI mismatch leaked: got HTTP $code from api.github.com with Host: objects.githubusercontent.com"
+  return 1
+}
+run "HTTPS MITM: Host header must agree with SNI" \
+  host_must_agree_with_sni
+
 # --- bucket 4: firewall DNS -------------------------------------------------
 run "DNS allowed: github.com resolves to an IP" \
   agent_sh 'dig +short +time=5 +tries=1 github.com | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"'

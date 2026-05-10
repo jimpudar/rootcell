@@ -14,3 +14,9 @@ proxy/allowed-ssh.txt
 proxy/allowed-dns.txt
 
 .claude/
+
+# Per-deployment TLS-MITM CA. agent-vm-ca.pem (key+cert) lives only on
+# the host and the firewall VM; agent-vm-ca-cert.pem (cert only) is
+# also installed in the agent VM trust store. Never commit either —
+# the key signs certs that the agent VM blindly trusts.
+pki/

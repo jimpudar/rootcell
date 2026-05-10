@@ -51,7 +51,8 @@ GUEST_REPO_DIR="/home/${GUEST_USER}/lima-pi-vm"
 # generated below from .env. Each VM pulls in only its own role module
 # via the flake output it builds.
 AGENT_NIX_FILES=(flake.nix common.nix agent-vm.nix home.nix
-                 git-local.nix network.nix network-local.nix pi)
+                 git-local.nix network.nix network-local.nix pi
+                 pki/agent-vm-ca-cert.pem)
 FIREWALL_NIX_FILES=(flake.nix common.nix firewall-vm.nix
                     network.nix network-local.nix proxy)
 
@@ -302,6 +303,67 @@ sync_allowlists() {
   limactl shell "$FIREWALL_VM" -- sudo /etc/agent-vm/reload.sh
 }
 
+# Generate the TLS-MITM CA on the host the first time it's missing.
+# Persisted under pki/ (gitignored). The agent VM's nix trust store
+# embeds the cert (so curl/git/openssl in the guest accept the
+# mitmproxy-minted per-host certs); the firewall VM's mitmproxy uses
+# the combined key+cert pem to mint and sign those certs on the fly.
+#
+# Three files come out:
+#   pki/agent-vm-ca.key       — RSA 2048 private key, 0600
+#   pki/agent-vm-ca-cert.pem  — X.509 cert (the trust anchor), 0644
+#   pki/agent-vm-ca.pem       — key + cert concatenated, 0600
+#                                (mitmproxy reads its CA from a single
+#                                pem containing both)
+#
+# 10-year validity. The CA is per-deployment (per-host, per-clone of
+# this repo); regenerate by deleting pki/.
+ensure_ca() {
+  local dir="$REPO_DIR/pki"
+  local key="$dir/agent-vm-ca.key"
+  local crt="$dir/agent-vm-ca-cert.pem"
+  local pem="$dir/agent-vm-ca.pem"
+
+  if [ -f "$key" ] && [ -f "$crt" ] && [ -f "$pem" ]; then
+    return 0
+  fi
+
+  log "generating TLS-MITM CA in pki/ (one-time, persists across runs)"
+  mkdir -p "$dir"
+  chmod 0700 "$dir"
+
+  # Self-signed CA. -nodes = don't encrypt the key (mitmproxy needs it
+  # readable at startup; the firewall VM is the only place it lands).
+  # Constraints + key usage make this a "real" CA in the technical
+  # sense — some clients (e.g. recent Go stdlib) reject as a CA any
+  # cert without basicConstraints CA:TRUE.
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$key" -out "$crt" -days 3650 \
+    -subj "/CN=agent-vm proxy CA" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    >/dev/null 2>&1
+
+  # mitmproxy expects key+cert in one file at confdir/mitmproxy-ca.pem.
+  cat "$key" "$crt" > "$pem"
+
+  chmod 0600 "$key" "$pem"
+  chmod 0644 "$crt"
+}
+
+# Push the CA's key+cert into the firewall VM at /etc/agent-vm/, with
+# strict perms (0600 root:root). limactl cp connects as the unprivileged
+# Lima user, so we stage in /tmp and then sudo-install to flip the
+# owner. ExecStartPre in firewall-vm.nix copies it from /etc into the
+# mitmproxy services' RuntimeDirectory at start.
+sync_firewall_ca() {
+  local pem="$REPO_DIR/pki/agent-vm-ca.pem"
+  limactl cp "$pem" "$FIREWALL_VM:/tmp/.agent-vm-ca.pem.staged"
+  limactl shell "$FIREWALL_VM" -- sudo install -m 0600 -o root -g root \
+    /tmp/.agent-vm-ca.pem.staged /etc/agent-vm/agent-vm-ca.pem
+  limactl shell "$FIREWALL_VM" -- rm -f /tmp/.agent-vm-ca.pem.staged
+}
+
 # --- Subcommand: allow ------------------------------------------------------
 # Hot-reload only — assumes both VMs are already up.
 if [ "$SUBCMD" = allow ]; then
@@ -333,17 +395,27 @@ fi
 if [ "$needs_firewall_provision" -eq 1 ]; then
   log "provisioning firewall VM (first run takes ~5 min)..."
   write_git_local_nix
+  ensure_ca
   copy_repo_into_vm "$FIREWALL_VM" "${FIREWALL_NIX_FILES[@]}"
   limactl shell "$FIREWALL_VM" -- bash -lc "
     set -e
     cd '$GUEST_REPO_DIR'
     sudo nixos-rebuild switch --flake .#firewall-vm
   "
+  # The mitmproxy services have ConditionPathExists=/etc/agent-vm/agent-vm-ca.pem
+  # so on the very first nixos-rebuild they're skipped (their CA is absent);
+  # we push the CA, then start them. On subsequent provisions the file is
+  # already there and nixos-rebuild restarts them itself, but pushing again
+  # is idempotent (and catches the case where the host's pki/ was rotated).
+  sync_firewall_ca
+  limactl shell "$FIREWALL_VM" -- sudo systemctl restart \
+    mitmproxy-explicit mitmproxy-transparent
   log "firewall provisioning complete."
 fi
 
 # Sync allowlists every time so edits to proxy/allowed-*.txt take effect
 # even on a plain ./agent invocation. Cheap (a few small file copies).
+ensure_ca
 sync_allowlists
 wait_for_firewall_listeners
 
@@ -418,8 +490,18 @@ if [ "$#" -eq 0 ]; then
   set -- bash -l
 fi
 
+# NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE are also set
+# via agent-vm.nix's environment.variables, but `limactl shell <vm> cmd`
+# runs over ssh as a non-login shell that doesn't source /etc/profile.
+# Pass them explicitly so Node-based agents (pi, claude code, codex)
+# trust the mitmproxy-minted certs without --insecure dances. The
+# bundle path is the NixOS system trust anchor, which our CA is
+# inserted into via security.pki.certificateFiles.
 exec limactl shell "$AGENT_VM" \
   env \
   AWS_BEARER_TOKEN_BEDROCK="$key" \
   AWS_REGION="${AWS_REGION:-us-east-1}" \
+  NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+  SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+  REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
   "$@"

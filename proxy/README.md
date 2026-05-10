@@ -6,9 +6,15 @@ VM passes through services running in the firewall VM:
 - **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/443
   packets that nftables NAT REDIRECT intercepts on the inter-VM link.
   Reads the TLS SNI from the ClientHello and matches against
-  `allowed-https.txt`. Passthrough on allow (no MITM, no CA in the agent
-  VM); deny redirects upstream to `127.0.0.1:1` so the client
-  TCP-handshake gets RST and the real upstream sees nothing.
+  `allowed-https.txt`. On allow, **terminates TLS** using a
+  per-deployment CA (the matching cert is in the agent VM's trust
+  store) and opens a fresh TLS connection upstream — validating the
+  upstream cert against the SNI/Host. The HTTP `Host` header is then
+  required to equal the SNI and itself be in the allowlist, so a client
+  can't tunnel out through a shared-IP CDN by lying about Host. On
+  deny, the upstream is redirected to `127.0.0.1:1` so the client TCP
+  handshake gets RST and no mitmproxy-issued cert is ever presented
+  (which would otherwise be the foothold for a `curl -k` bypass).
 - **mitmproxy (explicit / CONNECT)** at `192.168.106.2:8080` — handles
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
   Matches against `allowed-ssh.txt`.
@@ -25,11 +31,59 @@ as defense-in-depth. All egress must be HTTPS or SSH.
 
 The two mitmproxy instances share the same Python addon (mitmproxy can
 only run one mode per process). HTTPS is transparent by design; SSH
-stays explicit so we can allowlist by hostname.
+stays explicit (hostname allowlist) and is **not** MITM'd — TLS
+intercepting SSH would break key-based auth from inside the VM.
 
 The three allowlist files are gitignored; `./agent` seeds each from its
 `.defaults` sibling on first run. Edit the live `*.txt` to customize;
 delete the live file and re-run `./agent` to reset to project defaults.
+
+## CA materials
+
+`./agent` generates a per-deployment CA the first time it runs and
+persists it under `pki/` on the host (gitignored). Three files:
+
+- `pki/agent-vm-ca.key` — RSA 2048 private key, mode 0600. Host only.
+- `pki/agent-vm-ca-cert.pem` — public cert. Shipped into the agent VM
+  via `security.pki.certificateFiles` so the system trust store
+  accepts mitmproxy-minted certs.
+- `pki/agent-vm-ca.pem` — key + cert concatenated. `./agent` pushes
+  this into the firewall VM at `/etc/agent-vm/agent-vm-ca.pem` (mode
+  0600 root:root); systemd `LoadCredential` surfaces it to the
+  mitmproxy services.
+
+The CA is per-deployment (per-host, per-clone of this repo). Delete
+`pki/` and re-provision to rotate.
+
+### What still gets through
+
+Full MITM closes the SNI-vs-upstream-IP and Host-vs-SNI gaps, but the
+allowlist itself is the remaining attack surface:
+
+- **Shared infrastructure.** Wildcards like `*.cloudfront.net` or
+  `*.githubusercontent.com` are valid TLS hostnames an attacker can
+  also obtain certs for — anything they can host on those CDNs becomes
+  a working exfil channel even with MITM. Prefer specific hostnames
+  to wildcards; for write-able user-content services (gists,
+  Discord webhooks, Pastebin, etc.) consider whether you need them at
+  all.
+- **Covert channels in legitimate traffic** — timing, request order,
+  encoded URLs to allowed read-only endpoints. Not preventable at the
+  network layer.
+
+### What's still on the to-do list
+
+The firewall is solid against accidental egress and basic deliberate
+exfil, but a few gaps remain:
+
+- **QUIC / HTTP/3 (UDP 443).** Not intercepted; not currently dropped
+  at the nftables level. Most clients fall back to TCP if UDP 443
+  fails, but a deliberate one wouldn't.
+- **DoH endpoints in the allowlist.** Any allowed DoH host
+  (`cloudflare-dns.com`, `dns.google`, etc.) doubles as a DNS bypass
+  and an exfil channel. Audit `allowed-https.txt` for these.
+- **WebSocket frames** are passed through after the upgrade — Host
+  matches on the upgrade request, but frame contents aren't inspected.
 
 ## Adding a host
 

@@ -17,8 +17,13 @@ allowlist files live on the host (not in this VM) at
   `curl` / `git` fail with "Could not resolve host". Most common
   failure mode for unfamiliar domains.
 - **HTTPS SNI not allowlisted** (DNS resolves, but mitmproxy denies
-  the TLS handshake) → `curl` exits 35 or 60 with a TLS error. DNS
-  worked but the SNI didn't match.
+  the TLS handshake) → `curl` exits with a connection-reset / TLS
+  error (commonly 35 or 56). DNS worked but the SNI didn't match.
+- **HTTPS Host header doesn't agree with the SNI / connect target**
+  → mitmproxy MITM-terminates the TLS, sees the request, and kills
+  the flow → curl reports "Empty reply from server" (exit 52). Fix
+  by using the same hostname in the URL as the TLS connection — don't
+  override `Host:` to point at a different tenant on a shared CDN.
 - **Cleartext HTTP** → always denied. The firewall doesn't proxy port
   80 at all (the HTTP Host header is unauthenticated), so `curl
   http://host` hangs until it times out. Use `https://` instead.
@@ -60,8 +65,9 @@ both `allowed-dns.txt` and `allowed-https.txt`.
 - Setting `HTTPS_PROXY` / `HTTP_PROXY` env vars — the firewall is
   transparent at the network layer; the VM doesn't know about it and
   doesn't need to.
-- Installing a custom CA — there is no MITM on the allow path; the
-  proxy passes TLS through after checking the SNI.
+- Installing a custom CA — the firewall's per-deployment CA is
+  already in this VM's system trust store. Adding more CAs has no
+  effect on what the firewall accepts.
 - Retrying the same call — DNS REFUSED and SNI denial are fail-closed
   and won't change on their own.
 
@@ -73,10 +79,14 @@ with `curl -k` / `--insecure`, `wget --no-check-certificate`,
 `pip --trusted-host`, `GIT_SSL_NO_VERIFY=1`, Python `verify=False`,
 or any equivalent.
 
-Why: the firewall passes real upstream certs through for allowlisted
-SNIs. A cert verify failure inside this VM means the SNI was rejected
-(common cause: the allowlist entry is the apex `example.com` but you
-hit `www.example.com` — fnmatch doesn't match across the dot, so add
-`*.example.com` too). Bypassing the verification defeats the
-firewall's allowlist for that call. Stop and ask the user to add the
-host instead.
+Why: for allowlisted hosts, the firewall MITM-terminates TLS and
+presents per-host certs minted by a per-deployment CA that's already
+in this VM's trust store, AND it validates the upstream cert against
+the SNI on the way out. So a cert verify failure inside this VM
+either means (a) the SNI was rejected (common cause: the allowlist
+entry is the apex `example.com` but you hit `www.example.com` —
+fnmatch doesn't match across the dot, so add `*.example.com` too)
+or (b) the upstream presented a cert that doesn't validate for the
+hostname you asked for (i.e. someone is trying to MITM you, or DNS
+returned the wrong IP). Bypassing verification papers over the wrong
+problem in either case. Stop and ask the user.

@@ -1,4 +1,4 @@
-"""SNI / CONNECT-host allowlist addon for mitmproxy.
+"""TLS-intercepting allowlist addon for mitmproxy.
 
 Used by two mitmproxy instances on the firewall VM:
 
@@ -8,18 +8,33 @@ Used by two mitmproxy instances on the firewall VM:
 
   * transparent mode (port 8081) — receives nftables-redirected raw TCP
     for port 443. tls_clienthello inspects the SNI from the TLS
-    ClientHello against allowed-https.txt.
+    ClientHello against allowed-https.txt; if allowed, mitmproxy
+    terminates TLS using our per-deployment CA and opens a NEW TLS
+    connection upstream, validating the upstream cert against the SNI.
+    The request hook then enforces that the HTTP Host header agrees
+    with the SNI of the connection it arrived on.
+
+Why full MITM (was: SNI passthrough): SNI alone doesn't bind the bytes
+to the upstream identity. A cooperating client could send
+SNI=allowlisted.com but route the TCP to attacker IP, and `curl -k`
+(or any client tolerating cert errors) would happily establish a
+clean tunnel. With MITM, mitmproxy is the TLS *client* upstream and
+validates the upstream cert against the SNI/Host — the attacker IP
+can't produce a valid allowlisted.com cert, so the upstream
+connection fails and no bytes flow.
 
 Cleartext HTTP is NOT allowlisted. The HTTP `Host` header is
-unauthenticated — the client invents the string with no cryptographic
-binding to the upstream IP — so a Host-header allowlist gives no real
-guarantee. Port 80 is not NAT-redirected (see firewall-vm.nix) so this
-hook normally never fires; the deny-all in `request` is defense-in-depth
-in case any client ever sends a plain HTTP request to either listener.
+unauthenticated for plaintext connections, AND port 80 is not
+NAT-redirected (see firewall-vm.nix), so the request hook never
+fires for plain HTTP in normal operation. The deny-all in `request`
+for non-TLS flows is defense-in-depth in case any client ever sends
+a plain HTTP request to either listener.
 
-In all allow paths the addon NEVER decrypts (no MITM, no CA in the
-guest). It either kills the flow or sets ignore_connection, which makes
-mitmproxy relay raw bytes between client and upstream.
+The CA private key never leaves the firewall VM (loaded via systemd
+LoadCredential into a tmpfs readable only by the mitmproxy service
+uid). The agent VM's system trust store includes the CA's public
+cert via security.pki.certificateFiles — that's what makes the
+minted per-host certs verify.
 
 Allowlists live in /etc/agent-vm/ on the firewall VM. The addon stats
 them on every event and reloads on mtime change, so `./agent allow`
@@ -83,12 +98,36 @@ def _matches(host: str, patterns: set[str]) -> bool:
     return any(fnmatch.fnmatchcase(host, p) for p in patterns)
 
 
+def _deny_tls(data: tls.ClientHelloData, why: str) -> None:
+    """Fail-closed deny path for TLS flows.
+
+    Force the passthrough path to fail closed: redirect the upstream to a
+    closed local port, then set ignore_connection. mitmproxy will TCP-relay
+    to 127.0.0.1:1, get connection-refused, and tear down the client
+    tunnel. The denied SNI never sees a byte of the real destination, AND
+    the client never sees a mitmproxy-issued cert (which is what makes
+    `curl -k` ineffective as a bypass — there's no cert at all).
+
+    Critical dependency: this only works with `connection_strategy=lazy`
+    (set in firewall-vm.nix). Under the default `eager`, mitmproxy has
+    already opened the upstream to SO_ORIGINAL_DST by the time this hook
+    runs, and Server.__setattr__ raises on `address =` mutation of an
+    open connection.
+    """
+    logger.warning(f"DENY https {why}")
+    data.context.server.address = ("127.0.0.1", 1)
+    data.ignore_connection = True
+
+
 def http_connect(flow: http.HTTPFlow) -> None:
     host = flow.request.host
     port = flow.request.port
 
     if port == 443:
         # Decision deferred to tls_clienthello, where the real SNI is visible.
+        # (We do NOT trust the CONNECT host string for HTTPS — a client can
+        # CONNECT to anything; what matters is the SNI inside the TLS that
+        # follows.)
         return
 
     if port == 22:
@@ -105,44 +144,63 @@ def http_connect(flow: http.HTTPFlow) -> None:
 
 def tls_clienthello(data: tls.ClientHelloData) -> None:
     sni = data.client_hello.sni
-    if not sni or not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
-        logger.warning(f"DENY https sni={sni!r}")
-        # Force the passthrough path to fail closed: redirect the
-        # upstream to a closed local port, then set ignore_connection.
-        # mitmproxy will TCP-relay to 127.0.0.1:1, get connection-
-        # refused, and tear down the client tunnel. The denied SNI
-        # never sees a byte of the real destination.
-        #
-        # Critical dependency: this only works with
-        # `connection_strategy=lazy` (set in firewall-vm.nix). Under
-        # the default `eager`, mitmproxy has already opened the upstream
-        # to SO_ORIGINAL_DST by the time this hook runs, and
-        # Server.__setattr__ raises on `address =` mutation of an open
-        # connection. The hook dispatcher swallows that exception, so
-        # ignore_connection is never set, and mitmproxy falls through
-        # to a full MITM (CN=mitmproxy cert + relay to real upstream)
-        # — making the deny path a no-op for any client that ignores
-        # cert errors (e.g. `curl -k`).
-        data.context.server.address = ("127.0.0.1", 1)
-        data.ignore_connection = True
+    if not sni:
+        _deny_tls(data, "sni=<missing>")
         return
-
+    if not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
+        _deny_tls(data, f"sni={sni!r}")
+        return
+    # Allow → fall through. mitmproxy will terminate TLS using our CA
+    # (mitmproxy-ca.pem in confdir, see firewall-vm.nix), open a NEW TLS
+    # connection upstream, and validate the upstream cert against the SNI.
+    # The Host-header check happens in `request` once the HTTP request
+    # is decoded.
     logger.info(f"ALLOW https sni={sni}")
-    # Passthrough: relay raw bytes, no TLS termination. No CA needed in the
-    # guest. The proxy never sees plaintext.
-    data.ignore_connection = True
 
 
 def request(flow: http.HTTPFlow) -> None:
-    """Deny all cleartext HTTP. Host header is unauthenticated, so any
-    allowlist on it is theater — see module docstring."""
-    # In normal operation this hook is unreachable: port 80 is not
-    # NAT-redirected (firewall-vm.nix) and the explicit-mode listener
-    # only ever sees CONNECT for SSH. Kept as defense-in-depth so a
-    # misconfigured client (e.g. an accidental HTTP_PROXY pointing at
-    # :8080) still fails closed instead of being silently proxied.
-    # tls_clienthello short-circuits HTTPS via ignore_connection, so
-    # allowed HTTPS flows never reach this hook.
+    """HTTP-level checks for intercepted TLS flows.
+
+    Two reasons we got here:
+      1. A flow that passed tls_clienthello (SNI allowlisted) and is now
+         decoded as HTTP. Validate Host header agrees with SNI and is
+         itself in the allowlist.
+      2. A plain HTTP request that somehow landed on a listener (not
+         normally reachable: port 80 is not NAT-redirected). Kill it.
+    """
+    sni = flow.client_conn.sni
+    if not sni:
+        # Plain HTTP. No TLS context. Host header is unauthenticated;
+        # treat it as theater and kill. See module docstring.
+        logger.warning(f"DENY http host={flow.request.pretty_host!r}")
+        flow.kill()
+        return
+
+    # The HTTP Host header (or HTTP/2 :authority pseudo-header — mitmproxy
+    # normalizes both into flow.request.host). pretty_host strips the port.
     host = flow.request.pretty_host
-    logger.warning(f"DENY http host={host}")
-    flow.kill()
+    if not host:
+        logger.warning(f"DENY https host=<missing> sni={sni!r}")
+        flow.kill()
+        return
+
+    # Bind the inner HTTP request to the outer TLS identity. Without this,
+    # a client could open TLS with SNI=allowed-cdn.example and then send
+    # `Host: attacker-bucket.allowed-cdn.example` to reach a different
+    # tenant on the same shared upstream. Strict equality is the correct
+    # default; a wildcard SNI cert can serve many Hosts, but those would
+    # each need their own allowlist entry anyway.
+    if host.lower() != sni.lower():
+        logger.warning(f"DENY https host={host!r} != sni={sni!r}")
+        flow.kill()
+        return
+
+    # Re-check Host against the allowlist. Redundant with tls_clienthello
+    # in the common case (host == sni, both allowlisted), but defends
+    # against any future relaxation of the SNI/Host equality rule.
+    if not _matches(host, _https_cache.get(ALLOW_HTTPS)):
+        logger.warning(f"DENY https host={host!r} (not in allowlist)")
+        flow.kill()
+        return
+
+    logger.info(f"ALLOW https {flow.request.method} {host}{flow.request.path}")

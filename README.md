@@ -7,22 +7,30 @@ egress firewall.
 
 The architecture is **two VMs**: an **agent VM** where `pi` runs with full
 root, and a tiny **firewall VM** that brokers all egress through mitmproxy
-(SNI allowlist) and dnsmasq (DNS allowlist). The agent VM has no network
-path to the public internet except through the firewall VM.
+(TLS-MITM with SNI + Host allowlist) and dnsmasq (DNS allowlist). The agent
+VM has no network path to the public internet except through the firewall VM.
 
 **HTTPS egress is transparent** — the agent VM has no proxy env vars
 configured; the firewall intercepts TCP/443 with nftables NAT REDIRECT,
-then mitmproxy reads the SNI from the TLS ClientHello and applies the
-allowlist. Plain `curl https://github.com` Just Works (or doesn't,
+then mitmproxy reads the SNI from the TLS ClientHello, terminates TLS
+using a per-deployment CA (the matching cert is in the agent VM's trust
+store), and opens a new TLS connection upstream while validating the
+upstream cert. Plain `curl https://github.com` Just Works (or doesn't,
 transparently).
 
 **Cleartext HTTP is not allowed.** The HTTP `Host` header is unauthenticated
-— a client can claim any allowlisted name while connecting to any IP — so
-filtering on it is theater. SNI gives a real guarantee only because the
-client validates the upstream cert chain (which is why `curl -k` and friends
-are also banned, see `pi/agent/skills/network-allowlist/`). Port 80 is not
-NAT-redirected; packets fall through to FORWARD with no rule and are dropped.
-All egress must be HTTPS or SSH.
+in cleartext, AND port 80 is not NAT-redirected; packets fall through to
+FORWARD with no rule and are dropped. All egress must be HTTPS or SSH.
+
+**Why MITM and not just SNI passthrough.** SNI alone binds the bytes only
+to the *string* the client put in the ClientHello, not to the upstream's
+identity. A cooperating client could send `SNI=github.com` while routing
+the TCP to attacker IP, and `curl -k` would establish a clean tunnel. With
+MITM, mitmproxy is the TLS *client* upstream and validates the upstream
+cert against the SNI/Host — the attacker IP can't produce a valid
+github.com cert, so the upstream connection fails and no bytes flow.
+The HTTP `Host` header is also required to equal the SNI and be in the
+allowlist, closing the shared-CDN cross-tenant Host-spoofing variant.
 
 **SSH egress is explicit** because SSH has no SNI and we want hostname-level
 allowlisting. The agent VM's `~/.ssh/config` (set declaratively via
@@ -49,8 +57,10 @@ proxy/             # the egress firewall — see proxy/README.md:
                    #          and seeded from this on first run
   allowed-ssh.txt.defaults  #  SSH CONNECT-host allowlist seed
   allowed-dns.txt.defaults  #  DNS suffix allowlist seed (dnsmasq)
-  mitmproxy_addon.py #  mitmproxy addon implementing the SNI check
+  mitmproxy_addon.py #  mitmproxy addon implementing SNI + Host checks
   reload.sh        #   hot-reload helper (runs inside the firewall VM)
+pki/               # gitignored — per-deployment TLS-MITM CA, generated on
+                   #   first ./agent run; private key never leaves host+firewall
 pi/agent/          # mirrors ~/.pi/agent/ in the agent VM (home-manager symlinks):
   AGENTS.md        #   pi global instructions
   skills/          #   pi global skills (one dir per skill, each with SKILL.md)

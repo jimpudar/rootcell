@@ -322,6 +322,52 @@ Defaults (`192.168.106.0/24`, etc.) live in two places:
 Both should agree. Change them together if you want to shift the
 project-wide default subnet.
 
+### Debugging: agent VM can't reach the firewall on the new subnet
+
+Symptoms after switching to a second network: both VMs come up with
+the right IPs (`ip -br addr` on each looks correct), mitmproxy and
+dnsmasq are listening, but anything from the agent VM to the
+firewall — ping, `nc -vz <firewallIp> 53`, the first
+`nixos-rebuild` — returns `No route to host`. That's an ARP failure:
+the two VMs are on the same subnet on paper but not on the same
+socket_vmnet bridge in practice.
+
+The usual cause is a stale `socket_vmnet` daemon. Lima spawns the
+daemon on the first VM-start of a given Lima network and **leaves it
+running across VM stop/start**; later edits to `networks.yaml` or
+`/private/etc/sudoers.d/lima` don't restart it. So if the daemon
+spawned with a broken argv (e.g. `--vmnet-dhcp-end=<nil>` from a
+networks.yaml that was missing `dhcpEnd`), it stays broken until you
+kill it explicitly. A `pkill` alone isn't enough either — the abrupt
+exit leaves the pidfile and AF_UNIX socket behind, and the next
+spawn either short-circuits on the pidfile or fails to bind the
+socket.
+
+To diagnose, look at the running daemon's argv on the host:
+
+```bash
+ps -ax -o command | grep socket_vmnet.<network> | grep -v grep
+```
+
+Every flag should match what `limactl sudoers` would emit *right
+now* given the current `networks.yaml`. If anything mismatches
+(notably `--vmnet-dhcp-end=<nil>`, `--vmnet-gateway`, or
+`--vmnet-mask`), the daemon is stale.
+
+To fix:
+
+```bash
+limactl stop -f agent firewall
+sudo pkill -9 -f 'socket_vmnet.*<network>'
+sudo rm -f /private/var/run/lima/<network>_socket_vmnet.pid \
+           /private/var/run/lima/socket_vmnet.<network>
+./agent
+```
+
+Re-check `ps` afterwards — the freshly-spawned daemon should now
+have the correct flags, and the agent VM should be able to reach
+the firewall.
+
 ## Customizing
 
 - **Adjust hardware**: Lima copies `nixos.yaml` (and `firewall.yaml`) into

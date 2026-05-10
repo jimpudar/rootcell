@@ -12,10 +12,10 @@ in
 #                          192.168.106.0/24, overridable via .env;
 #                          IPs come from network.nix)
 #
-# Hybrid filtering — HTTPS is transparent, SSH is explicit:
+# Hybrid filtering — HTTPS is transparent, SSH is explicit, HTTP is denied:
 #
-#   HTTPS/HTTP traffic from the agent VM is intercepted by nftables NAT
-#   PREROUTING REDIRECT (TCP 80, 443 → local :8081), so the agent VM's
+#   HTTPS traffic from the agent VM is intercepted by nftables NAT
+#   PREROUTING REDIRECT (TCP 443 → local :8081), so the agent VM's
 #   `curl https://github.com` works without any proxy env vars. mitmproxy
 #   in transparent mode reads the original destination via SO_ORIGINAL_DST
 #   and the SNI from the TLS ClientHello, then either kills the connection
@@ -25,6 +25,13 @@ in
 #   sets a ProxyCommand that opens an HTTP CONNECT tunnel to mitmproxy
 #   running in regular mode on :8080. mitmproxy's addon allowlists by
 #   CONNECT host:22.
+#
+#   Cleartext HTTP (TCP/80) is NOT proxied and NOT forwarded. The HTTP
+#   `Host` header is unauthenticated — a client can claim any allowlisted
+#   name while connecting to any IP, so a Host-header allowlist gives no
+#   real guarantee. Without a NAT REDIRECT for port 80, packets hit
+#   FORWARD with no rule and are dropped (ip_forward=0 backstops this).
+#   All egress must be HTTPS or SSH.
 #
 #   DNS is explicit too — the agent VM's networkConfig.DNS points at the
 #   firewall directly. dnsmasq forwards allowlisted suffixes to 1.1.1.1;
@@ -99,10 +106,14 @@ in
     };
   };
 
-  # NAT REDIRECT for transparent HTTPS/HTTP. Lives in its own table so it
+  # NAT REDIRECT for transparent HTTPS. Lives in its own table so it
   # doesn't tangle with the NixOS-generated firewall table. The dstnat hook
   # rewrites the destination IP/port BEFORE the routing decision, so the
   # packet lands in INPUT chain (not FORWARD) and is delivered to mitmproxy.
+  #
+  # Only TCP/443 is redirected. TCP/80 is intentionally NOT redirected:
+  # cleartext HTTP can't be allowlisted safely (Host header is unauthenticated),
+  # so port-80 packets fall through to FORWARD with no rule and are dropped.
   networking.nftables.tables.agent-vm-nat = {
     family = "ip";
     content = ''
@@ -114,7 +125,6 @@ in
         # string match resolved at rule-load time inside the running
         # guest. The interface is enp0s2 (the second virtio-net,
         # enp0s1 is the Apple Virtio NAT we don't configure).
-        iifname "enp0s2" tcp dport 80  redirect to :8081
         iifname "enp0s2" tcp dport 443 redirect to :8081
       }
     '';
@@ -202,7 +212,7 @@ in
   };
 
   systemd.services.mitmproxy-transparent = {
-    description = "mitmproxy (transparent — for NAT-redirected HTTPS/HTTP)";
+    description = "mitmproxy (transparent — for NAT-redirected HTTPS)";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];

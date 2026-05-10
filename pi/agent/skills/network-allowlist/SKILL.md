@@ -18,7 +18,10 @@ allowlist files live on the host (not in this VM) at
   failure mode for unfamiliar domains.
 - **HTTPS SNI not allowlisted** (DNS resolves, but mitmproxy denies
   the TLS handshake) → `curl` exits 35 or 60 with a TLS error. DNS
-  worked but the SNI/Host didn't match.
+  worked but the SNI didn't match.
+- **Cleartext HTTP** → always denied. The firewall doesn't proxy port
+  80 at all (the HTTP Host header is unauthenticated), so `curl
+  http://host` hangs until it times out. Use `https://` instead.
 - **SSH host not allowlisted** → `ssh git@host` fails with
   "Connection closed by remote host" or `kex_exchange_identification`.
 
@@ -40,8 +43,9 @@ Probe it directly from inside this VM:
 You can't change the allowlist from in here. Ask the user:
 
 > Please add `<hostname>` to the relevant file(s) on the host:
-> - `proxy/allowed-https.txt` — HTTPS / HTTP (SNI / Host header,
->   `fnmatch` globs; `*.example.com` matches subdomains, not the apex).
+> - `proxy/allowed-https.txt` — HTTPS only (TLS SNI, `fnmatch` globs;
+>   `*.example.com` matches subdomains, not the apex). Cleartext HTTP
+>   is denied at the firewall and can't be allowlisted.
 > - `proxy/allowed-ssh.txt` — SSH CONNECT-host (same glob format).
 > - `proxy/allowed-dns.txt` — DNS suffixes (plain hostnames, suffix
 >   match: `github.com` covers `api.github.com` too).

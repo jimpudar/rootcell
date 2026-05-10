@@ -139,6 +139,13 @@ run "pi --help runs" \
 run "HTTPS allowed: github.com" \
   agent_sh 'code=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com) && [[ "$code" =~ ^[23] ]]'
 
+# Cleartext HTTP must always fail — the firewall doesn't proxy port 80
+# (Host header is unauthenticated, so a port-80 allowlist is theater).
+# Even an otherwise-allowed host must not work over plain HTTP. --max-time
+# bounds the dropped-packet wait; curl exits non-zero either way.
+run "HTTP denied: even allowed host fails over cleartext (github.com:80)" \
+  bash -c "! limactl shell $AGENT_VM_NAME -- bash -lc 'curl -sS --max-time 5 -o /dev/null http://github.com' >/dev/null 2>&1"
+
 # example.com isn't in allowed-dns.txt, so dnsmasq returns REFUSED and
 # curl never reaches mitmproxy — denial is enforced by DNS, not SNI.
 run "HTTPS denied via DNS: example.com (curl fails)" \

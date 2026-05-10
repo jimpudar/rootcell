@@ -1,4 +1,4 @@
-"""SNI / CONNECT-host / Host-header allowlist addon for mitmproxy.
+"""SNI / CONNECT-host allowlist addon for mitmproxy.
 
 Used by two mitmproxy instances on the firewall VM:
 
@@ -7,13 +7,19 @@ Used by two mitmproxy instances on the firewall VM:
     against allowed-ssh.txt for port 22.
 
   * transparent mode (port 8081) — receives nftables-redirected raw TCP
-    for ports 80 and 443. For 443, tls_clienthello inspects the SNI from
-    the TLS ClientHello against allowed-https.txt. For 80, request
-    inspects the Host header against the same list.
+    for port 443. tls_clienthello inspects the SNI from the TLS
+    ClientHello against allowed-https.txt.
 
-In all cases the addon NEVER decrypts (no MITM, no CA in the guest). It
-either kills the flow or sets ignore_connection, which makes mitmproxy
-relay raw bytes between client and upstream.
+Cleartext HTTP is NOT allowlisted. The HTTP `Host` header is
+unauthenticated — the client invents the string with no cryptographic
+binding to the upstream IP — so a Host-header allowlist gives no real
+guarantee. Port 80 is not NAT-redirected (see firewall-vm.nix) so this
+hook normally never fires; the deny-all in `request` is defense-in-depth
+in case any client ever sends a plain HTTP request to either listener.
+
+In all allow paths the addon NEVER decrypts (no MITM, no CA in the
+guest). It either kills the flow or sets ignore_connection, which makes
+mitmproxy relay raw bytes between client and upstream.
 
 Allowlists live in /etc/agent-vm/ on the firewall VM. The addon stats
 them on every event and reloads on mtime change, so `./agent allow`
@@ -128,15 +134,15 @@ def tls_clienthello(data: tls.ClientHelloData) -> None:
 
 
 def request(flow: http.HTTPFlow) -> None:
-    """Plain HTTP requests on port 80 in transparent mode. Match by Host."""
-    # HTTPS flows are short-circuited in tls_clienthello (passthrough), so
-    # this hook only fires for cleartext HTTP that was NAT-redirected to
-    # the transparent listener. Decision is by the Host header / authority.
-    if flow.request.scheme != "http":
-        return
+    """Deny all cleartext HTTP. Host header is unauthenticated, so any
+    allowlist on it is theater — see module docstring."""
+    # In normal operation this hook is unreachable: port 80 is not
+    # NAT-redirected (firewall-vm.nix) and the explicit-mode listener
+    # only ever sees CONNECT for SSH. Kept as defense-in-depth so a
+    # misconfigured client (e.g. an accidental HTTP_PROXY pointing at
+    # :8080) still fails closed instead of being silently proxied.
+    # tls_clienthello short-circuits HTTPS via ignore_connection, so
+    # allowed HTTPS flows never reach this hook.
     host = flow.request.pretty_host
-    if not _matches(host, _https_cache.get(ALLOW_HTTPS)):
-        logger.warning(f"DENY http host={host}")
-        flow.kill()
-        return
-    logger.info(f"ALLOW http host={host}")
+    logger.warning(f"DENY http host={host}")
+    flow.kill()

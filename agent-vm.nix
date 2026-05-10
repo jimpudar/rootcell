@@ -54,9 +54,11 @@ in
   # explicit so it's an invariant, not an accident.)
   networking.hosts = lib.mkForce {};
 
-  # No HTTP-proxy env config here. The firewall VM intercepts TCP/80 and
-  # TCP/443 at the network layer via nftables NAT REDIRECT, so plain
+  # No HTTP-proxy env config here. The firewall VM intercepts TCP/443 at
+  # the network layer via nftables NAT REDIRECT, so plain
   # `curl https://github.com` (and nix-daemon's fetches) Just Work without
-  # any in-VM proxy awareness. SSH still uses an explicit ProxyCommand —
-  # see programs.ssh in home.nix.
+  # any in-VM proxy awareness. Cleartext TCP/80 is not redirected — it's
+  # dropped on the firewall, because HTTP `Host` is unauthenticated and
+  # can't be allowlisted safely. All egress must be HTTPS or SSH. SSH
+  # still uses an explicit ProxyCommand — see programs.ssh in home.nix.
 }

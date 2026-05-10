@@ -3,11 +3,11 @@
 The egress firewall for the agent VM. All outbound traffic from the agent
 VM passes through services running in the firewall VM:
 
-- **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/80
-  and TCP/443 packets that nftables NAT REDIRECT intercepts on the
-  inter-VM link. Reads the TLS SNI (HTTPS) or HTTP Host header and matches
-  against `allowed-https.txt`. Passthrough on allow (no MITM, no CA in
-  the agent VM); deny redirects upstream to `127.0.0.1:1` so the client
+- **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/443
+  packets that nftables NAT REDIRECT intercepts on the inter-VM link.
+  Reads the TLS SNI from the ClientHello and matches against
+  `allowed-https.txt`. Passthrough on allow (no MITM, no CA in the agent
+  VM); deny redirects upstream to `127.0.0.1:1` so the client
   TCP-handshake gets RST and the real upstream sees nothing.
 - **mitmproxy (explicit / CONNECT)** at `192.168.106.2:8080` — handles
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
@@ -16,9 +16,16 @@ VM passes through services running in the firewall VM:
   matching `allowed-dns.txt` to 1.1.1.1 and returns `REFUSED` for
   everything else.
 
+Cleartext HTTP (TCP/80) is **not** proxied. The HTTP `Host` header is
+unauthenticated — a client can claim any allowlisted name while connecting
+to any IP — so a Host-header allowlist is theater. Port 80 is not
+NAT-redirected; packets hit FORWARD with no rule and are dropped. Both
+mitmproxy instances also kill any plain HTTP request that reaches them,
+as defense-in-depth. All egress must be HTTPS or SSH.
+
 The two mitmproxy instances share the same Python addon (mitmproxy can
-only run one mode per process). HTTPS/HTTP is transparent by design;
-SSH stays explicit so we can allowlist by hostname.
+only run one mode per process). HTTPS is transparent by design; SSH
+stays explicit so we can allowlist by hostname.
 
 The three allowlist files are gitignored; `./agent` seeds each from its
 `.defaults` sibling on first run. Edit the live `*.txt` to customize;
@@ -37,6 +44,9 @@ matches by suffix, mitmproxy matches by `fnmatch` glob.
 ## File formats
 
 ### `allowed-https.txt`
+
+HTTPS (TCP/443) only — matched against the TLS SNI in the ClientHello.
+Cleartext HTTP is denied at the firewall, not allowlisted.
 
 `fnmatch` glob, one per line. Comments start with `#`.
 

@@ -248,11 +248,16 @@ networks:
   host2:
     mode: host
     gateway: 192.168.107.1
+    dhcpEnd: 192.168.107.254
     netmask: 255.255.255.0
 ```
 
 The `gateway` is what the macOS host bridge claims for itself — *don't*
 put either VM at that address (see network.nix for the gory detail).
+`dhcpEnd` isn't optional even though the VMs use static IPs: Lima bakes
+the field into the sudoers rule, and a missing value lands in sudoers
+as the literal string `<nil>`, which `socket_vmnet` rejects, so the
+bridge never comes up.
 
 The name (`host2` here) is what you'll reference in `.env`. Subnet must
 not overlap any other entry on this Mac.

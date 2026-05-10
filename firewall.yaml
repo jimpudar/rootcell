@@ -16,6 +16,10 @@ portForwards:
     guestIP: 0.0.0.0
     ignore: true
 
+ssh:
+  # Keep the Lima control plane independent from guest IP configuration.
+  overVsock: true
+
 user:
   home: "/home/{{.User}}"
 

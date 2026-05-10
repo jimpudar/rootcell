@@ -27,6 +27,10 @@
     isNormalUser = true;
     extraGroups = [ "wheel" ];
     shell = pkgs.bash;
+    # nixos-lima's boot-time init waits for the user's systemd manager
+    # before it can start lima-guestagent. The agent VM has no NAT SSH
+    # fallback after provisioning, so the user manager must come up at boot.
+    linger = true;
   };
 
   # Lima expects passwordless sudo for its guest user.

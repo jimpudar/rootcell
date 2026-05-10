@@ -1,0 +1,95 @@
+--- a/pkg/driver/vz/vm_darwin.go	2026-05-10 15:30:50
++++ b/pkg/driver/vz/vm_darwin.go	2026-05-10 15:30:50
+@@ -48,0 +49,20 @@
++const disableDefaultUsernetForVsockEnv = "LIMA_DISABLE_DEFAULT_USERNET_FOR_VSOCK"
++
++func useSSHOverVsock(inst *limatype.Instance) bool {
++	useSSHOverVsock := *inst.Config.OS == limatype.LINUX
++	if inst.Config.SSH.OverVsock != nil {
++		useSSHOverVsock = *inst.Config.SSH.OverVsock
++	}
++	return useSSHOverVsock
++}
++
++func disableDefaultUsernetForVsock(inst *limatype.Instance) bool {
++	if !useSSHOverVsock(inst) {
++		return false
++	}
++	if limayaml.FirstUsernetIndex(inst.Config) != -1 {
++		return false
++	}
++	return os.Getenv(disableDefaultUsernetForVsockEnv) == inst.Name
++}
++
+@@ -110,4 +130 @@
+-						useSSHOverVsock := *inst.Config.OS == limatype.LINUX
+-						if inst.Config.SSH.OverVsock != nil {
+-							useSSHOverVsock = *inst.Config.SSH.OverVsock
+-						}
++						useSSHOverVsock := useSSHOverVsock(inst)
+@@ -121,0 +139,17 @@
++						} else if usernetClient == nil {
++							hostAddress := net.JoinHostPort(inst.SSHAddress, strconv.Itoa(usernetSSHLocalPort))
++							if err := wrapper.waitAndStartVsockForwarder(ctx, 22, hostAddress); err == nil {
++								if onVsockEvent != nil {
++									onVsockEvent(&events.VsockEvent{
++										Type:      events.VsockEventStarted,
++										HostAddr:  hostAddress,
++										VsockPort: 22,
++									})
++								}
++							} else {
++								logrus.WithError(err).WithField("hostAddress", hostAddress).Warn("Failed to start vsock SSH forwarder")
++								if onVsockEvent != nil {
++									onVsockEvent(&events.VsockEvent{Type: events.VsockEventFailed, Reason: err.Error()})
++								}
++								sendErrCh <- err
++							}
+@@ -154,2 +188,4 @@
+-						err := usernetClient.ConfigureDriver(ctx, inst, usernetSSHLocalPort)
+-						if err != nil {
++						if usernetClient == nil {
++							return
++						}
++						if err := usernetClient.ConfigureDriver(ctx, inst, usernetSSHLocalPort); err != nil {
+@@ -164 +200,3 @@
+-					_ = usernetClient.UnExposeSSH(inst.SSHLocalPort)
++					if usernetClient != nil {
++						_ = usernetClient.UnExposeSSH(inst.SSHLocalPort)
++					}
+@@ -182,0 +221,3 @@
++	if disableDefaultUsernetForVsock(inst) {
++		return nil, nil, nil
++	}
+@@ -419 +460 @@
+-	if firstUsernetIndex == -1 {
++	if firstUsernetIndex == -1 && !disableDefaultUsernetForVsock(inst) {
+@@ -434 +475 @@
+-	} else {
++	} else if firstUsernetIndex != -1 {
+--- a/pkg/driver/vz/vsock_forwarder.go	2026-05-10 15:30:50
++++ b/pkg/driver/vz/vsock_forwarder.go	2026-05-10 15:30:50
+@@ -10,0 +11 @@
++	"fmt"
+@@ -11,0 +13 @@
++	"time"
+@@ -16,0 +19,19 @@
++func (m *virtualMachineWrapper) waitAndStartVsockForwarder(ctx context.Context, vsockPort uint32, hostAddress string) error {
++	ticker := time.NewTicker(500 * time.Millisecond)
++	defer ticker.Stop()
++
++	var lastErr error
++	for {
++		if err := m.startVsockForwarder(ctx, vsockPort, hostAddress); err == nil {
++			return nil
++		} else {
++			lastErr = err
++		}
++		select {
++		case <-ctx.Done():
++			return fmt.Errorf("timed out waiting for vsock:%d on VM: %w", vsockPort, lastErr)
++		case <-ticker.C:
++		}
++	}
++}
++

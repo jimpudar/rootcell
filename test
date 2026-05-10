@@ -71,16 +71,21 @@ fi
 log "provisioning test VMs (first run takes ~15 min)..."
 "$REPO_DIR/agent" provision
 
-# Force-sync the .defaults allowlists into the test firewall so the
-# test assertions are stable regardless of any host-side allowlist
-# customization. Only touches the test firewall (firewall-test); the
-# host's live files and the prod firewall are untouched.
-log "syncing .defaults allowlists into test firewall..."
-for f in allowed-https.txt allowed-ssh.txt allowed-dns.txt; do
-  limactl cp "$REPO_DIR/proxy/$f.defaults" \
-    "$FIREWALL_VM_NAME:/etc/agent-vm/$f"
-done
-limactl shell "$FIREWALL_VM_NAME" -- sudo /etc/agent-vm/reload.sh >/dev/null
+sync_default_allowlists() {
+  # Force-sync the .defaults allowlists into the test firewall so the
+  # test assertions are stable regardless of any host-side allowlist
+  # customization. Only touches the test firewall (firewall-test); the
+  # host's live files and the prod firewall are untouched.
+  log "syncing .defaults allowlists into test firewall..."
+  local f
+  for f in allowed-https.txt allowed-ssh.txt allowed-dns.txt; do
+    limactl cp "$REPO_DIR/proxy/$f.defaults" \
+      "$FIREWALL_VM_NAME:/etc/agent-vm/$f"
+  done
+  limactl shell "$FIREWALL_VM_NAME" -- sudo /etc/agent-vm/reload.sh >/dev/null
+}
+
+sync_default_allowlists
 
 # --- harness ----------------------------------------------------------------
 PASS=0
@@ -107,26 +112,80 @@ run() {
 agent_sh()    { limactl shell "$AGENT_VM_NAME"    -- bash -lc "$1"; }
 firewall_sh() { limactl shell "$FIREWALL_VM_NAME" -- bash -lc "$1"; }
 
+yaml_has_over_vsock() {
+  local file="$1"
+  awk '
+    /^ssh:/ { in_ssh = 1; next }
+    in_ssh && /^[^[:space:]#]/ { in_ssh = 0 }
+    in_ssh && /^[[:space:]]+overVsock:[[:space:]]+true[[:space:]]*$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
+lima_instance_has_over_vsock() {
+  limactl list "$1" --json | grep -q '"overVsock":true'
+}
+
+checked_in_yamls_have_over_vsock() {
+  yaml_has_over_vsock "$REPO_DIR/nixos.yaml" \
+    && yaml_has_over_vsock "$REPO_DIR/firewall.yaml"
+}
+
+agent_restarts_via_wrapper() {
+  limactl stop "$AGENT_VM_NAME"
+  "$REPO_DIR/agent" provision
+  sync_default_allowlists
+  limactl shell "$AGENT_VM_NAME" -- true
+}
+
 log "running tests..."
 
 # --- bucket 1: provisioning -------------------------------------------------
+run "checked-in Lima YAMLs force SSH over VSOCK" \
+  checked_in_yamls_have_over_vsock
+
 run "agent VM is Running" \
   bash -c "[ \"\$(limactl list --format '{{.Status}}' $AGENT_VM_NAME)\" = Running ]"
 
 run "firewall VM is Running" \
   bash -c "[ \"\$(limactl list --format '{{.Status}}' $FIREWALL_VM_NAME)\" = Running ]"
 
+run "agent Lima config has ssh.overVsock enabled" \
+  lima_instance_has_over_vsock "$AGENT_VM_NAME"
+
+run "firewall Lima config has ssh.overVsock enabled" \
+  lima_instance_has_over_vsock "$FIREWALL_VM_NAME"
+
+run "agent Lima user has lingering enabled" \
+  agent_sh 'loginctl show-user "$USER" -p Linger | grep -q Linger=yes'
+
+run "agent restarts via ./agent after locked-down networking" \
+  agent_restarts_via_wrapper
+
 run "firewall services active" \
   firewall_sh 'systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null'
 
-# A static IP on enp0s2 proves the per-VM systemd-networkd config from
+# A static IP on the private socket_vmnet NIC proves the per-VM
+# systemd-networkd config from
 # agent-vm.nix / firewall-vm.nix actually applied. Stronger signal than
 # `hostname`, which Lima can override per-instance.
-run "agent VM has test IP on enp0s2" \
-  agent_sh "ip -4 -o addr show enp0s2 | grep -q '$AGENT_IP/'"
+run "agent VM has test IP on enp0s1" \
+  agent_sh "ip -4 -o addr show enp0s1 | grep -q '$AGENT_IP/'"
+
+run "agent VM has no default Lima usernet NIC" \
+  agent_sh "! ip link show enp0s2 >/dev/null 2>&1"
+
+run "agent VM routes default traffic through firewall" \
+  agent_sh "ip route show default | grep -q '^default via $FIREWALL_IP dev enp0s1'"
+
+run "agent VM has no direct usernet address" \
+  agent_sh "! ip -4 -o addr show | grep -q '192\\.168\\.5\\.'"
 
 run "firewall VM has test IP on enp0s2" \
   firewall_sh "ip -4 -o addr show enp0s2 | grep -q '$FIREWALL_IP/'"
+
+run "agent reaches firewall dnsmasq on private VMNET link" \
+  agent_sh "dig @$FIREWALL_IP +short +time=5 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'"
 
 run "home-manager dev CLIs on PATH" \
   agent_sh 'command -v pi && command -v rg && command -v gh && command -v jq >/dev/null'
@@ -223,21 +282,27 @@ run "HTTPS allowed: cert issuer is our deployment CA (proves MITM is on)" \
 # routes the TCP to a non-allowlisted IP must fail. Without MITM
 # (passthrough), `curl -k` against `--resolve allowed.com:443:evil.ip`
 # would happily complete the TLS handshake to evil.ip presenting its
-# own cert. With MITM, mitmproxy opens upstream as the real allowed.com
-# and validates the cert — evil.ip can't produce a valid cert, so the
-# upstream connection fails and curl gets nothing. We use 1.1.1.1 as
-# the "evil" IP — it's reachable (DNS-bypassed), serves TLS, but its
-# cert is for *.cloudflare-dns.com, not github.com.
+# own cert. With MITM, mitmproxy connects to the original destination
+# and validates the upstream cert against the allowed SNI; evil.ip can't
+# produce a valid cert, so mitmproxy must fail before relaying upstream
+# bytes. A mitmproxy-generated 502 for "hostname mismatch" is acceptable;
+# an upstream response is not. We use 1.1.1.1 as the "evil" IP — it's
+# reachable (DNS-bypassed), serves TLS, but its cert is for
+# *.cloudflare-dns.com, not github.com.
 sni_pinned_to_upstream_identity() {
-  local size
-  size=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
-    'curl -sk --max-time 10 -o /dev/null -w "%{size_download}" \
+  local out
+  out=$(limactl shell "$AGENT_VM_NAME" -- bash -lc \
+    'curl -sk --max-time 10 -D - \
        --resolve github.com:443:1.1.1.1 https://github.com' 2>/dev/null) || true
-  size=${size:-0}
-  if [ "$size" = 0 ]; then
+  if [ -z "$out" ]; then
     return 0
   fi
-  echo "MITM bypass: SNI=github.com routed to 1.1.1.1 leaked $size bytes"
+  if echo "$out" | grep -qi '^server: mitmproxy' \
+     && echo "$out" | grep -qi 'Certificate verify failed: hostname mismatch'; then
+    return 0
+  fi
+  echo "MITM bypass: SNI=github.com routed to 1.1.1.1 returned unexpected response:"
+  printf '%s\n' "$out" | head -20
   return 1
 }
 run "HTTPS MITM: SNI-vs-upstream-IP mismatch denied" \

@@ -58,6 +58,27 @@ FIREWALL_NIX_FILES=(flake.nix common.nix firewall-vm.nix
 
 log() { printf 'agent: %s\n' "$*" >&2; }
 
+LIMACTL_BIN="${LIMACTL:-}"
+ensure_lima() {
+  [ -n "$LIMACTL_BIN" ] && return 0
+
+  local out err
+  err=$(mktemp)
+  if ! out=$(nix build --no-link --print-out-paths "$REPO_DIR#lima" 2>"$err"); then
+    log "failed to build repo-patched Lima from $REPO_DIR/flake.nix:"
+    sed 's/^/agent:   /' "$err" >&2
+    rm -f "$err"
+    exit 1
+  fi
+  rm -f "$err"
+  LIMACTL_BIN="$out/bin/limactl"
+}
+
+limactl() {
+  ensure_lima
+  LIMA_DISABLE_DEFAULT_USERNET_FOR_VSOCK="$AGENT_VM" "$LIMACTL_BIN" "$@"
+}
+
 # --- Subcommand parsing -----------------------------------------------------
 SUBCMD=""
 case "${1:-}" in
@@ -100,6 +121,7 @@ LIMA_NETWORK="${LIMA_NETWORK:-host}"
 FIREWALL_IP="${FIREWALL_IP:-192.168.106.2}"
 AGENT_IP="${AGENT_IP:-192.168.106.3}"
 NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
+VM_START_TIMEOUT="${VM_START_TIMEOUT:-180s}"
 
 # Generate network-local.nix from the resolved values. Mirrors how
 # git-local.nix is generated. The file is gitignored; defaults in
@@ -146,12 +168,16 @@ fi
 SOCKET_VMNET_DST=/opt/socket_vmnet/bin/socket_vmnet
 
 ensure_socket_vmnet() {
-  local out
-  out=$(nix build --no-link --print-out-paths "$REPO_DIR#socket_vmnet" 2>&1) || {
+  local out err
+  err=$(mktemp)
+  out=$(nix build --no-link --print-out-paths "$REPO_DIR#socket_vmnet" 2>"$err") || {
     log "failed to build socket_vmnet from $REPO_DIR/pkgs/socket_vmnet.nix:"
-    printf '%s\n' "$out" >&2
+    cat "$err" >&2
+    rm -f "$err"
     exit 1
   }
+  cat "$err" >&2
+  rm -f "$err"
   local nix_bin="$out/bin/socket_vmnet"
 
   if [ -x "$SOCKET_VMNET_DST" ] && cmp -s "$nix_bin" "$SOCKET_VMNET_DST"; then
@@ -201,6 +227,80 @@ EOF
 fi
 
 # --- 2. Helpers -------------------------------------------------------------
+# Return a Lima VM status, or an empty string if the VM does not exist.
+vm_status() {
+  limactl list --format '{{.Status}}' "$1" 2>/dev/null || true
+}
+
+socket_vmnet_pidfile() {
+  printf '/private/var/run/lima/%s_socket_vmnet.pid' "$LIMA_NETWORK"
+}
+
+socket_vmnet_socket() {
+  printf '/private/var/run/lima/socket_vmnet.%s' "$LIMA_NETWORK"
+}
+
+socket_vmnet_is_stale() {
+  local sock pidfile pid
+  sock=$(socket_vmnet_socket)
+  pidfile=$(socket_vmnet_pidfile)
+
+  # No socket means no daemon has been started for this network yet.
+  [ -e "$sock" ] || return 1
+
+  # A socket with no pidfile, or a pidfile whose process is gone, leaves
+  # running VMs with broken VZ<->VMNET pipes until they reconnect.
+  [ -f "$pidfile" ] || return 0
+  pid=$(cat "$pidfile" 2>/dev/null || true)
+  [ -n "$pid" ] || return 0
+  if ps -p "$pid" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+force_stop_if_running() {
+  local name="$1" status
+  status=$(vm_status "$name")
+  if [ "$status" = Running ]; then
+    log "force-stopping $name VM to repair stale $LIMA_NETWORK socket_vmnet network..."
+    limactl stop --force "$name"
+  fi
+}
+
+repair_stale_socket_vmnet() {
+  if ! socket_vmnet_is_stale; then
+    return 0
+  fi
+
+  log "stale socket_vmnet daemon detected for Lima network '$LIMA_NETWORK'."
+  log "restarting affected VMs one at a time so Lima recreates the VMNET pipe."
+  force_stop_if_running "$AGENT_VM"
+  force_stop_if_running "$FIREWALL_VM"
+}
+
+diagnose_start_failure() {
+  local name="$1" log_file="$HOME/.lima/$name/ha.stderr.log" tail_out=""
+  [ -f "$log_file" ] && tail_out=$(tail -80 "$log_file" 2>/dev/null || true)
+
+  if echo "$tail_out" | grep -q 'Waiting for port to become available on .*:22' \
+     && ! echo "$tail_out" | grep -q 'Started vsock forwarder'; then
+    log "$name VM did not establish Lima SSH over VSOCK."
+    log "Lima is waiting for guest TCP/22 on its default usernet path."
+    log "The agent VM should be started with this repo's patched Lima, which"
+    log "skips that usernet NIC and polls VSOCK directly for SSH."
+  fi
+}
+
+start_vm() {
+  local name="$1"
+  if limactl start --timeout "$VM_START_TIMEOUT" "$name"; then
+    return 0
+  fi
+  diagnose_start_failure "$name"
+  exit 1
+}
+
 # Returns 0 if the VM was already running or was just started from Stopped.
 # Returns 1 if the VM was newly created (caller must force a provision).
 #
@@ -212,18 +312,24 @@ fi
 ensure_vm_running() {
   local name="$1" config="$2"
   local status
-  status=$(limactl list --format '{{.Status}}' "$name" 2>/dev/null || true)
+  status=$(vm_status "$name")
   case "$status" in
     Running) return 0 ;;
-    Stopped) log "starting $name VM..."; limactl start "$name"; return 0 ;;
+    Stopped)
+      log "starting $name VM..."
+      start_vm "$name"
+      return 0
+      ;;
     "")
       log "$name VM not found — creating (~3-5 min for image + boot)..."
       # Wrap in `if` so the call-site `|| force_provision=1` (which masks
       # function returns) doesn't also mask a real limactl failure here.
-      if ! limactl start --tty=false --name="$name" \
+      if ! limactl start --timeout "$VM_START_TIMEOUT" --tty=false --name="$name" \
             --set ".user.name = \"$GUEST_USER\"" \
             --set ".networks[0].lima = \"$LIMA_NETWORK\"" \
+            --set ".ssh.overVsock = true" \
             "$config"; then
+        diagnose_start_failure "$name"
         log "limactl start $name failed; aborting."
         exit 1
       fi
@@ -233,18 +339,51 @@ ensure_vm_running() {
   esac
 }
 
+bootstrap_agent_firewall_route() {
+  limactl shell "$AGENT_VM" -- sudo bash -lc "
+    set -euo pipefail
+    iface=enp0s1
+    if [ -e /sys/class/net/enp0s2 ]; then
+      iface=enp0s2
+    fi
+    ip link set \"\$iface\" up
+    ip addr flush dev \"\$iface\"
+    ip addr add '$AGENT_IP/$NETWORK_PREFIX' dev \"\$iface\"
+    ip route replace default via '$FIREWALL_IP' dev \"\$iface\"
+    if command -v resolvectl >/dev/null 2>&1; then
+      resolvectl dns \"\$iface\" '$FIREWALL_IP' || true
+      resolvectl domain \"\$iface\" '~.' || true
+    fi
+    printf 'nameserver %s\n' '$FIREWALL_IP' > /etc/resolv.conf
+  "
+}
+
+bootstrap_agent_firewall_trust() {
+  limactl shell "$AGENT_VM" -- bash -lc "
+    set -euo pipefail
+    cert='$GUEST_REPO_DIR/pki/agent-vm-ca-cert.pem'
+    bundle=/tmp/agent-vm-bootstrap-ca-bundle.crt
+    if [ -r /etc/ssl/certs/ca-certificates.crt ]; then
+      cat /etc/ssl/certs/ca-certificates.crt \"\$cert\" > \"\$bundle\"
+    else
+      cp \"\$cert\" \"\$bundle\"
+    fi
+    chmod 0644 \"\$bundle\"
+  "
+}
+
 # Copy a file/dir list into the VM at $GUEST_REPO_DIR.
 copy_repo_into_vm() {
   local vm="$1"; shift
   local files=("$@")
   limactl shell "$vm" -- mkdir -p "$GUEST_REPO_DIR"
-  local copy_args=()
-  local f
+  local f parent
   for f in "${files[@]}"; do
-    copy_args+=("$REPO_DIR/$f")
+    parent=$(dirname "$f")
+    [ "$parent" = "." ] && parent=
+    limactl shell "$vm" -- mkdir -p "$GUEST_REPO_DIR/$parent"
+    limactl cp -r "$REPO_DIR/$f" "$vm:$GUEST_REPO_DIR/$parent/"
   done
-  copy_args+=("$vm:$GUEST_REPO_DIR/")
-  limactl cp -r "${copy_args[@]}"
 }
 
 # Generate git-local.nix from the host's git config so commits inside the
@@ -377,6 +516,11 @@ if [ "$SUBCMD" = allow ]; then
   exit 0
 fi
 
+# Repair a known bad state where the socket file remains but the backing
+# socket_vmnet process has died. In that state Lima can still report the VMs
+# as Running, but the agent cannot reach the firewall VM's DNS/proxy ports.
+repair_stale_socket_vmnet
+
 # --- 3. Bring up the firewall VM and provision it --------------------------
 force_firewall=0
 [ "$SUBCMD" = provision ] && force_firewall=1
@@ -437,15 +581,27 @@ if [ "$needs_agent_provision" -eq 1 ]; then
   write_git_local_nix
   copy_repo_into_vm "$AGENT_VM" "${AGENT_NIX_FILES[@]}"
 
-  # The firewall VM is up with nftables NAT REDIRECT for TCP/80 and TCP/443,
-  # so the agent VM's first nixos-rebuild reaches cache.nixos.org through
-  # the transparent mitmproxy with no in-VM config needed. After the
-  # rebuild applies, the only network path is via the firewall (lima0),
-  # which is the steady state.
+  # The patched Lima launcher gives the agent VM only the private VMNET NIC.
+  # Before the new NixOS generation is active, install a temporary route and
+  # resolver so the first nixos-rebuild already fetches through the firewall.
+  # The base image has not imported our MITM CA yet, so build a temporary CA
+  # bundle for the bootstrap Nix commands. agent-vm.nix installs the same CA
+  # into the system trust store for steady state.
+  bootstrap_agent_firewall_route
+  bootstrap_agent_firewall_trust
   limactl shell "$AGENT_VM" -- bash -lc "
     set -e
     cd '$GUEST_REPO_DIR'
-    sudo nixos-rebuild switch --flake .#agent-vm
+    export NIX_SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+    export SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+    export GIT_SSL_CAINFO=/tmp/agent-vm-bootstrap-ca-bundle.crt
+    export REQUESTS_CA_BUNDLE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+    sudo env \
+      NIX_SSL_CERT_FILE=\"\$NIX_SSL_CERT_FILE\" \
+      SSL_CERT_FILE=\"\$SSL_CERT_FILE\" \
+      GIT_SSL_CAINFO=\"\$GIT_SSL_CAINFO\" \
+      REQUESTS_CA_BUNDLE=\"\$REQUESTS_CA_BUNDLE\" \
+      nixos-rebuild switch --flake .#agent-vm
     nix run nixpkgs#home-manager -- switch --flake .#$GUEST_USER
   "
   log "agent provisioning complete."

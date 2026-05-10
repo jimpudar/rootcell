@@ -1,9 +1,9 @@
 # Lima config for the agent VM. The agent has root inside this VM, so its
 # only network interface is the lima:host segment shared with the firewall
 # VM (default 192.168.106.0/24, configurable via .env — see README).
-# No internet egress except through the firewall. `limactl shell` works
-# over vsock without needing a routable NIC because ssh.overVsock=true is
-# the default on vmType: vz with Linux guests.
+# No internet egress except through the firewall. The repo's patched Lima
+# launcher skips the default usernet NIC for this VM and brings up the
+# localhost SSH forwarder by polling VSOCK directly.
 
 images:
   - location: "https://github.com/nixos-lima/nixos-lima/releases/download/v0.0.5/nixos-lima-v0.0.5-aarch64.qcow2"
@@ -21,6 +21,11 @@ portForwards:
     guestIP: 0.0.0.0
     ignore: true
 
+ssh:
+  # The agent VM has no direct usernet NIC in steady state, so Lima
+  # control-plane SSH must use VSOCK.
+  overVsock: true
+
 user:
   home: "/home/{{.User}}"
 
@@ -36,11 +41,9 @@ containerd:
   user: false
 
 # Only one explicit Lima network: lima:host = the private segment
-# shared with the firewall VM (default 192.168.106.0/24). The kernel
-# names this NIC enp0s2 inside the guest (Apple Virtio NAT, which Lima
-# always provides with vmType: vz, takes enp0s1). No vzNAT here, no
-# internet path that bypasses the firewall — agent-vm.nix only assigns
-# an IP to enp0s2, leaving enp0s1 unmanaged. The Lima network name is
-# overridden at create time by `./agent` from $LIMA_NETWORK in .env.
+# shared with the firewall VM (default 192.168.106.0/24). The patched
+# launcher suppresses Lima's implicit default usernet NIC, so this is the
+# only agent NIC and appears as enp0s1 in the guest. The Lima network name
+# is overridden at create time by `./agent` from $LIMA_NETWORK in .env.
 networks:
   - lima: host

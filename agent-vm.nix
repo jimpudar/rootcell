@@ -17,21 +17,18 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: only the lima:host interface (enp0s2 in kernel naming)
-  # is configured. enp0s1 (Apple Virtio NAT) is left unmanaged by
-  # networkd so it stays IP-less, and there's no path to the internet
-  # that bypasses the firewall VM.
-  # `limactl shell` keeps working because ssh.overVsock=true is the default
-  # on vz+Linux, so the SSH control plane is independent of any IP NIC.
+  # Networking: only the lima:host interface is configured. The repo's
+  # patched Lima launcher skips the default usernet NIC for this VM, so
+  # the private socket_vmnet link is enp0s1 and there is no direct host
+  # usernet path a root-capable agent could reconfigure into egress.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
   # The lima:host link from nixos.yaml. The kernel names it via systemd's
-  # predictable scheme — enp0s2 because it's the second PCI virtio-net
-  # device (enp0s1 is Apple's Virtio NAT, which we deliberately don't
-  # configure here so it has no IP and can't carry traffic).
-  systemd.network.networks."10-enp0s2" = {
-    matchConfig.Name = "enp0s2";
+  # predictable scheme. With the default usernet NIC suppressed, this is
+  # enp0s1.
+  systemd.network.networks."10-enp0s1" = {
+    matchConfig.Name = "enp0s1";
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;
@@ -76,7 +73,7 @@ in
   # tolerates cert errors) would establish a clean tunnel. With MITM,
   # mitmproxy is the TLS *client* upstream and the attacker IP can't
   # produce a valid allowed.com cert — so no bytes flow.
-  security.pki.certificateFiles = [ ./agent-vm-ca-cert.pem ];
+  security.pki.certificateFiles = [ ./pki/agent-vm-ca-cert.pem ];
 
   # Common SDK trust-store env vars. NixOS's security.pki.certificateFiles
   # adds the CA to /etc/ssl/certs/ca-certificates.crt, which curl, git,

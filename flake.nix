@@ -44,6 +44,22 @@
       darwinPkgs = forEachDarwin (sys:
         let p = nixpkgs.legacyPackages.${sys};
         in {
+          lima = p.lima.overrideAttrs (old: rec {
+            version = "2.1.1";
+            src = p.fetchFromGitHub {
+              owner = "lima-vm";
+              repo = "lima";
+              rev = "v${version}";
+              hash = "sha256-U054xA3utBcSfpyvsZi4MvgJGNa7QyAYJf9usNXpgXg=";
+            };
+            vendorHash = "sha256-C4YCuFVXkL5vS6lWZCGkEeZQgAkP55buPDGZ/wvMnAA=";
+            patches = (old.patches or []) ++ [
+              ./patches/lima-vz-vsock-no-default-usernet.patch
+            ];
+            meta = old.meta // {
+              knownVulnerabilities = [];
+            };
+          });
           socket_vmnet = p.callPackage ./pkgs/socket_vmnet.nix { };
         });
     in
@@ -64,6 +80,7 @@
       };
 
       packages = forEachDarwin (sys: {
+        lima         = darwinPkgs.${sys}.lima;
         socket_vmnet = darwinPkgs.${sys}.socket_vmnet;
         default      = darwinPkgs.${sys}.socket_vmnet;
       });

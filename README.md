@@ -150,6 +150,18 @@ and the env vars exported are the only other assumptions baked in.
                                # (after editing proxy/allowed-*.txt)
 ```
 
+To make the command available on `PATH`, symlink the repo script instead of
+copying it:
+
+```bash
+mkdir -p "$HOME/bin"
+ln -sf /path/to/lima-pi-vm/agent "$HOME/bin/agent"
+```
+
+The script resolves that symlink back to the repo before looking for
+`flake.nix`, `.env`, and the NixOS modules, so `agent` and `./agent` behave
+the same way.
+
 On first run, `./agent`:
 
 1. Brings up the firewall VM and rebuilds it (mitmproxy + dnsmasq).

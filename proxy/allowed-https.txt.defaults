@@ -9,6 +9,10 @@
 # AWS Bedrock (the agent's LLM provider)
 bedrock-runtime.*.amazonaws.com
 
+# OpenAI Codex / ChatGPT Plus-Pro subscription auth
+auth.openai.com
+chatgpt.com
+
 # GitHub (clones, releases, raw content)
 github.com
 api.github.com

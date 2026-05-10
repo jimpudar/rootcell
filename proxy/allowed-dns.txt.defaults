@@ -4,6 +4,8 @@
 # Anything else returns 0.0.0.0 via the catch-all.
 
 amazonaws.com
+openai.com
+chatgpt.com
 github.com
 githubusercontent.com
 gitlab.com

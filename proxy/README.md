@@ -128,6 +128,7 @@ limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transpar
 
 # What is the agent sending to Bedrock?
 ./rootcell spy
+./rootcell spy --tui
 
 # Is mitmproxy listening on both ports?
 limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
@@ -158,6 +159,8 @@ limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
   headers, summarizes binary JSON fields, decodes AWS event streams, and
   elides repeated prompt prefixes marked with `cachePoint` or
   `cache_control`.
+- `agent_spy_tui.py` — Textual browser for the same spy event stream,
+  launched by `./rootcell spy --tui`.
 - `reload.sh` — runs inside the firewall VM after `./rootcell allow` copies
   fresh allowlist files in. Regenerates dnsmasq's config and signals it.
 - This README.

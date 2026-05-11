@@ -183,6 +183,14 @@ class AgentSpyTests(unittest.TestCase):
         self.assertIn("usage: input=4, output=2", out)
         self.assertIn("stop: end_turn", out)
 
+    def test_tail_keyboard_interrupt_exits_cleanly(self):
+        original = agent_spy._tail_events
+        try:
+            agent_spy._tail_events = lambda path, formatter: (_ for _ in ()).throw(KeyboardInterrupt())
+            self.assertEqual(agent_spy.main(["tail", "--events", "/tmp/missing"]), 130)
+        finally:
+            agent_spy._tail_events = original
+
 
 if __name__ == "__main__":
     unittest.main()

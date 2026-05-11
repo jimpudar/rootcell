@@ -64,7 +64,9 @@ in
   imports = [ ./common.nix ];
 
   networking.hostName = "firewall-vm";
-  environment.systemPackages = [ pkgs.python3 ];
+  environment.systemPackages = [
+    (pkgs.python3.withPackages (ps: [ ps.textual ]))
+  ];
 
   # ── Networking ────────────────────────────────────────────────────────
   networking.useDHCP = false;
@@ -181,6 +183,10 @@ in
   environment.etc."agent-vm/mitmproxy_addon.py".source = ./proxy/mitmproxy_addon.py;
   environment.etc."agent-vm/agent_spy.py" = {
     source = ./proxy/agent_spy.py;
+    mode = "0755";
+  };
+  environment.etc."agent-vm/agent_spy_tui.py" = {
+    source = ./proxy/agent_spy_tui.py;
     mode = "0755";
   };
 

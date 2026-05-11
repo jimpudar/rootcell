@@ -166,10 +166,13 @@ run "firewall services active" \
   firewall_sh 'systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null'
 
 run "agent spy --help is wired" \
-  "$REPO_DIR/rootcell" spy --help
+  bash -c "'$REPO_DIR/rootcell' spy --help | grep -q -- '--tui'"
+
+run "agent spy tui flags parse with help" \
+  bash -c "'$REPO_DIR/rootcell' spy --tui --raw --no-dedupe --help | grep -q -- '--tui'"
 
 run "firewall spy formatter installed" \
-  firewall_sh 'test -x /etc/agent-vm/agent_spy.py && command -v python3 >/dev/null && test -d /run/agent-vm-spy'
+  firewall_sh 'test -x /etc/agent-vm/agent_spy.py && test -x /etc/agent-vm/agent_spy_tui.py && command -v python3 >/dev/null && python3 -c "import textual" && test -d /run/agent-vm-spy'
 
 # A static IP on the private socket_vmnet NIC proves the per-VM
 # systemd-networkd config from

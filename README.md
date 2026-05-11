@@ -107,6 +107,7 @@ rebuilt. Later runs normally take seconds.
 ./rootcell pubkey                 # print the agent VM's SSH public key
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
+./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
 ```
 
 ## Allowing Network Access
@@ -223,6 +224,7 @@ network.nix              default inter-VM network settings
 .env.defaults            seed values for local `.env`
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
+  agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
 pi/agent/                global pi instructions, skills, and extensions
 completions/             bash and zsh completion for `rootcell`
 pkgs/socket_vmnet.nix    local package for Lima's vmnet helper
@@ -356,6 +358,7 @@ See formatted Bedrock Runtime requests and responses:
 ```bash
 ./rootcell spy
 ./rootcell spy --raw
+./rootcell spy --tui
 ```
 
 Check that firewall services are listening:

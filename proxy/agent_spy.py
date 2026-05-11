@@ -1129,7 +1129,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.cmd == "tail":
-        _tail_events(args.events, SpyFormatter(raw=args.raw, dedupe=not args.no_dedupe))
+        try:
+            _tail_events(args.events, SpyFormatter(raw=args.raw, dedupe=not args.no_dedupe))
+        except KeyboardInterrupt:
+            return 130
         return 0
 
     parser.print_help()

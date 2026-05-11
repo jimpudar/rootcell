@@ -74,7 +74,7 @@ log() { printf 'rootcell: %s\n' "$*" >&2; }
 
 spy_usage() {
   cat <<'EOF'
-Usage: ./rootcell spy [--raw] [--no-dedupe]
+Usage: ./rootcell spy [--raw] [--no-dedupe] [--tui]
 
 Tail a formatted stream of AWS Bedrock Runtime requests and responses
 captured by the firewall VM's mitmproxy TLS interception.
@@ -82,6 +82,7 @@ captured by the firewall VM's mitmproxy TLS interception.
 Options:
   --raw        also print sanitized raw JSON bodies
   --no-dedupe  do not elide repeated cache-marked prompt prefixes
+  --tui        browse captured traffic in an interactive Textual TUI
   -h, --help   show this help
 EOF
 }
@@ -163,11 +164,13 @@ VM_START_TIMEOUT="${VM_START_TIMEOUT:-180s}"
 
 SPY_RAW=0
 SPY_DEDUPE=1
+SPY_TUI=0
 if [ "$SUBCMD" = spy ]; then
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --raw) SPY_RAW=1; shift ;;
       --no-dedupe) SPY_DEDUPE=0; shift ;;
+      --tui) SPY_TUI=1; shift ;;
       -h|--help) spy_usage; exit 0 ;;
       *) log "unknown spy option: $1"; spy_usage >&2; exit 2 ;;
     esac
@@ -560,6 +563,35 @@ sync_firewall_ca() {
   limactl shell "$FIREWALL_VM" -- rm -f /tmp/.agent-vm-ca.pem.staged
 }
 
+host_time_zone() {
+  if [ -n "${TZ:-}" ]; then
+    printf '%s\n' "$TZ"
+    return 0
+  fi
+
+  local link
+  if link=$(readlink /etc/localtime 2>/dev/null); then
+    case "$link" in
+      */zoneinfo/*)
+        printf '%s\n' "${link##*/zoneinfo/}"
+        return 0
+        ;;
+      /usr/share/zoneinfo/*)
+        printf '%s\n' "${link#/usr/share/zoneinfo/}"
+        return 0
+        ;;
+      /var/db/timezone/zoneinfo/*)
+        printf '%s\n' "${link#/var/db/timezone/zoneinfo/}"
+        return 0
+        ;;
+    esac
+  fi
+
+  if command -v systemsetup >/dev/null 2>&1; then
+    systemsetup -gettimezone 2>/dev/null | sed 's/^Time Zone: //'
+  fi
+}
+
 run_spy() {
   local spy_session="/run/agent-vm-spy/enabled.$$"
 
@@ -569,8 +601,9 @@ run_spy() {
   limactl shell "$FIREWALL_VM" -- sudo chmod 0666 /run/agent-vm-spy/enabled "$spy_session"
 
   cleanup_spy() {
+    local session="$1"
     limactl shell "$FIREWALL_VM" -- sudo sh -lc "
-      rm -f '$spy_session'
+      rm -f '$session'
       if ls /run/agent-vm-spy/enabled.* >/dev/null 2>&1; then
         touch /run/agent-vm-spy/enabled
         chmod 0666 /run/agent-vm-spy/enabled
@@ -579,27 +612,55 @@ run_spy() {
       fi
     " >/dev/null 2>&1 || true
   }
-  trap cleanup_spy EXIT INT TERM
+  cleanup_spy_and_exit() {
+    local status="${1:-130}"
+    cleanup_spy "$spy_session"
+    trap - EXIT INT TERM
+    exit "$status"
+  }
+  trap 'cleanup_spy "$spy_session"' EXIT
+  trap 'cleanup_spy_and_exit 130' INT TERM
 
   log "spying on Bedrock Runtime traffic from $FIREWALL_VM (Ctrl-C to stop)..."
-  case "$SPY_RAW:$SPY_DEDUPE" in
-    1:0)
-      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
-        python3 /etc/agent-vm/agent_spy.py tail --raw --no-dedupe
-      ;;
-    1:1)
-      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
-        python3 /etc/agent-vm/agent_spy.py tail --raw
-      ;;
-    0:0)
-      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
-        python3 /etc/agent-vm/agent_spy.py tail --no-dedupe
-      ;;
-    *)
-      limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
-        python3 /etc/agent-vm/agent_spy.py tail
-      ;;
-  esac
+  local spy_status=0
+  set +e
+  if [ "$SPY_TUI" -eq 1 ]; then
+    local tui_args=(--events /run/agent-vm-spy/events.ndjson)
+    local tui_env=(PYTHONUNBUFFERED=1)
+    local local_tz
+    [ "$SPY_RAW" -eq 1 ] && tui_args+=(--raw)
+    [ "$SPY_DEDUPE" -eq 0 ] && tui_args+=(--no-dedupe)
+    local_tz=$(host_time_zone || true)
+    [ -n "$local_tz" ] && tui_env+=(AGENT_SPY_LOCAL_TZ="$local_tz")
+    limactl shell "$FIREWALL_VM" -- sudo env "${tui_env[@]}" \
+      python3 /etc/agent-vm/agent_spy_tui.py "${tui_args[@]}"
+    spy_status=$?
+  else
+    case "$SPY_RAW:$SPY_DEDUPE" in
+      1:0)
+        limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+          python3 /etc/agent-vm/agent_spy.py tail --raw --no-dedupe
+        ;;
+      1:1)
+        limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+          python3 /etc/agent-vm/agent_spy.py tail --raw
+        ;;
+      0:0)
+        limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+          python3 /etc/agent-vm/agent_spy.py tail --no-dedupe
+        ;;
+      *)
+        limactl shell "$FIREWALL_VM" -- sudo env PYTHONUNBUFFERED=1 \
+          python3 /etc/agent-vm/agent_spy.py tail
+        ;;
+    esac
+    spy_status=$?
+  fi
+  set -e
+
+  trap - EXIT INT TERM
+  cleanup_spy "$spy_session"
+  return "$spy_status"
 }
 
 # --- Subcommand: allow ------------------------------------------------------
@@ -631,7 +692,9 @@ if [ "$needs_firewall_provision" -eq 0 ]; then
         'systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \
          && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \
          && systemctl is-active dnsmasq >/dev/null 2>&1 \
-         && test -x /etc/agent-vm/agent_spy.py' 2>/dev/null; then
+         && test -x /etc/agent-vm/agent_spy.py \
+         && test -x /etc/agent-vm/agent_spy_tui.py \
+         && python3 -c "import textual"' 2>/dev/null; then
     needs_firewall_provision=1
   fi
 fi

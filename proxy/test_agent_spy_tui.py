@@ -114,6 +114,16 @@ class AgentSpyTuiTests(unittest.TestCase):
             "1969-12-31 8:00:00 PM EDT",
         )
 
+    def test_section_marker_click_hit_test_accounts_for_horizontal_scroll(self):
+        self.assertTrue(agent_spy_tui.is_section_marker_click(0, 0))
+        self.assertTrue(agent_spy_tui.is_section_marker_click(1, 0))
+        self.assertTrue(agent_spy_tui.is_section_marker_click(2, 0))
+        self.assertTrue(agent_spy_tui.is_section_marker_click(3, 0))
+        self.assertTrue(agent_spy_tui.is_section_marker_click(1, 1))
+        self.assertTrue(agent_spy_tui.is_section_marker_click(0, 2))
+        self.assertFalse(agent_spy_tui.is_section_marker_click(4, 0))
+        self.assertFalse(agent_spy_tui.is_section_marker_click(1, 3))
+
     def test_view_model_sections_include_system_tools_and_raw(self):
         store = agent_spy_tui.EventPairStore(raw=True)
         store.add_event(

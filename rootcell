@@ -572,16 +572,16 @@ host_time_zone() {
   local link
   if link=$(readlink /etc/localtime 2>/dev/null); then
     case "$link" in
-      */zoneinfo/*)
-        printf '%s\n' "${link##*/zoneinfo/}"
-        return 0
-        ;;
       /usr/share/zoneinfo/*)
         printf '%s\n' "${link#/usr/share/zoneinfo/}"
         return 0
         ;;
       /var/db/timezone/zoneinfo/*)
         printf '%s\n' "${link#/var/db/timezone/zoneinfo/}"
+        return 0
+        ;;
+      */zoneinfo/*)
+        printf '%s\n' "${link##*/zoneinfo/}"
         return 0
         ;;
     esac

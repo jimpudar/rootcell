@@ -1,10 +1,9 @@
 name: CI
 
 on:
-  # Keep PR runner selection controlled by the base branch. Fork PRs still
-  # get tested, but they cannot edit this workflow to request paid macOS
-  # runners before review.
-  pull_request_target:
+  # Use pull_request, not pull_request_target, so forked PRs stay subject to
+  # GitHub's normal external-contributor approval gate and receive no secrets.
+  pull_request:
   push:
     branches:
       - main
@@ -26,16 +25,7 @@ jobs:
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.pycache
 
     steps:
-      - name: Check out pull request
-        if: ${{ github.event_name == 'pull_request_target' }}
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
       - name: Check out repository
-        if: ${{ github.event_name != 'pull_request_target' }}
         uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -63,16 +53,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Check out pull request
-        if: ${{ github.event_name == 'pull_request_target' }}
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
       - name: Check out repository
-        if: ${{ github.event_name != 'pull_request_target' }}
         uses: actions/checkout@v6
         with:
           persist-credentials: false

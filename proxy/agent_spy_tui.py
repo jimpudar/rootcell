@@ -49,6 +49,15 @@ class StreamView:
     raw: list[str] = field(default_factory=list)
 
 
+SECTION_TOGGLE_START_COLUMN = 0
+SECTION_TOGGLE_END_COLUMN = 3
+
+
+def is_section_marker_click(x: int | float, scroll_x: int | float) -> bool:
+    column = int(scroll_x) + int(x)
+    return SECTION_TOGGLE_START_COLUMN <= column <= SECTION_TOGGLE_END_COLUMN
+
+
 class EventPairStore:
     """Pair request/response events by flow_id while preserving arrival order."""
 
@@ -788,7 +797,12 @@ def run_textual(events_path: str, raw: bool = False, dedupe: bool = True) -> Non
         def toggle_current(self) -> None:
             if not self.sections:
                 return
-            self._collapsed[self.active_section] = not self._collapsed[self.active_section]
+            self._toggle_section(self.active_section)
+
+        def _toggle_section(self, section_index: int) -> None:
+            if not (0 <= section_index < len(self.sections)):
+                return
+            self._collapsed[section_index] = not self._collapsed[section_index]
             self._rebuild_lines()
             self._keep_active_section_visible()
 
@@ -825,7 +839,16 @@ def run_textual(events_path: str, raw: bool = False, dedupe: bool = True) -> Non
             row = self._scroll_y() + event.y
             if 0 <= row < len(self._line_refs):
                 kind, section_index, _line_index = self._line_refs[row]
-                if kind in {"section", "body"} and section_index is not None:
+                if kind == "section" and section_index is not None:
+                    self.active_section = section_index
+                    self.focus()
+                    scroll_x, _scroll_y = self.scroll_offset
+                    if is_section_marker_click(event.x, scroll_x):
+                        self._toggle_section(section_index)
+                    else:
+                        self.refresh()
+                    event.stop()
+                elif kind == "body" and section_index is not None:
                     self.active_section = section_index
                     self.focus()
                     self.refresh()

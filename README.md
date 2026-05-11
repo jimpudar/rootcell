@@ -1,6 +1,6 @@
 # rootcell
 
-![macOS only](https://img.shields.io/badge/macOS-only-111?style=flat-square&logo=apple&logoColor=white) [![build](https://img.shields.io/github/actions/workflow/status/jimpudar/rootcell/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/jimpudar/rootcell/actions/workflows/ci.yml)
+[![build](https://img.shields.io/github/actions/workflow/status/jimpudar/rootcell/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/jimpudar/rootcell/actions/workflows/ci.yml)
 
 Give the agent root in the cell, not on your host.
 
@@ -10,6 +10,17 @@ firewall VM with DNS, HTTPS, and SSH allowlists. HTTPS is routed through a
 transparent decrypting proxy, so rootcell can enforce host policy and
 `./rootcell spy` can show formatted Bedrock Runtime traffic when you need to see
 what the agent is sending.
+
+## Current Scope
+
+rootcell is early and intentionally narrow. Today it targets:
+
+- **Host OS:** macOS hosts.
+- **LLM provider:** Amazon Bedrock / Bedrock Runtime.
+- **Coding harness:** [Pi](https://pi.dev) inside the agent VM.
+
+The agent and firewall environments are NixOS VMs, but the host-side lifecycle,
+networking, Keychain integration, and Lima configuration currently assume macOS.
 
 ## Why This Exists
 
@@ -61,6 +72,7 @@ You need:
 
 - macOS with [Lima](https://lima-vm.io) installed.
 - [Nix](https://nixos.org/download) installed.
+- Amazon Bedrock credentials stored in macOS Keychain.
 
 The default VM build targets Apple Silicon hosts. Intel hosts require the
 architecture changes described in [Changing Architecture](#changing-architecture).
@@ -155,8 +167,8 @@ Edit `home.packages` in `home.nix`, then run:
 
 ### Customize Pi
 
-The agent VM is preconfigured to have [Pi](pi.dev) installed, but you can use any
-CLI coding agent you want to.
+The agent VM is preconfigured to run [Pi](https://pi.dev). Support for other
+coding harnesses is on the roadmap.
 
 Everything under `pi/agent/` on the host is symlinked into `~/.pi/agent/` inside
 the agent VM.
@@ -208,6 +220,18 @@ What remains your responsibility:
 
 Known technical gaps and operational debugging notes live in
 [proxy/README.md](proxy/README.md).
+
+## Roadmap
+
+rootcell's current goal is to make the narrow macOS + Bedrock + Pi path solid
+before broadening the support matrix. Planned expansion includes:
+
+- **Host compatibility:** support both macOS and Linux hosts.
+- **LLM providers:** add OpenAI and Anthropic alongside Amazon Bedrock.
+- **Coding harnesses:** support Codex CLI and Claude Code CLI alongside Pi.
+
+The long-term shape is a provider- and harness-pluggable local VM boundary, with
+the same explicit network policy model across supported hosts.
 
 ## Project Layout
 

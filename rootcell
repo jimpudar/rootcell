@@ -8,12 +8,12 @@
 #                 a private link to the firewall; no other internet path.
 #
 # On every invocation:
-#   1. Reads the AWS Bedrock API key from macOS Keychain.
+#   1. Reads configured provider secrets from macOS Keychain.
 #   2. Ensures the firewall VM exists, is running, and is provisioned.
 #      Syncs the allowlist files into it and reloads.
 #   3. Waits for the firewall's mitmproxy + dnsmasq to be listening.
 #   4. Ensures the agent VM exists, is running, and is provisioned.
-#   5. Execs into the agent VM with the key in the env.
+#   5. Execs into the agent VM with the configured secrets in the env.
 #
 # HTTPS/HTTP egress from the agent VM is filtered transparently — there
 # are no proxy env vars to set, the firewall VM intercepts via NAT. SSH
@@ -36,6 +36,8 @@
 #   sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/   # install command (one-time)
 #   limactl sudoers | sudo tee /private/etc/sudoers.d/lima
 #   security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
+#   # secrets.env default:
+#   #   AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key
 #   chmod +x ./rootcell
 
 set -euo pipefail
@@ -132,6 +134,11 @@ if [ ! -f "$REPO_DIR/.env" ] && [ -f "$REPO_DIR/.env.defaults" ]; then
   log "seeded .env from .env.defaults"
 fi
 
+if [ ! -f "$REPO_DIR/secrets.env" ] && [ -f "$REPO_DIR/secrets.env.defaults" ]; then
+  cp "$REPO_DIR/secrets.env.defaults" "$REPO_DIR/secrets.env"
+  log "seeded secrets.env from secrets.env.defaults"
+fi
+
 # Seed the egress allowlists from their .defaults siblings on first run.
 # The live files (proxy/allowed-*.txt) are gitignored so users can edit
 # them freely without git noise; the .defaults versions are the canonical
@@ -155,12 +162,62 @@ if [ -f "$REPO_DIR/.env" ]; then
 fi
 
 # Apply defaults for any network var the user didn't set in .env. These
-# match the defaults in network.nix so a stale .env still works.
+# match the defaults in network.nix.
 LIMA_NETWORK="${LIMA_NETWORK:-host}"
 FIREWALL_IP="${FIREWALL_IP:-192.168.106.2}"
 AGENT_IP="${AGENT_IP:-192.168.106.3}"
 NETWORK_PREFIX="${NETWORK_PREFIX:-24}"
 VM_START_TIMEOUT="${VM_START_TIMEOUT:-180s}"
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+read_keychain_secrets() {
+  INJECTED_SECRET_ENV=()
+
+  [ -f "$REPO_DIR/secrets.env" ] || return 0
+
+  local line env_name service value service_arg
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+
+    if [[ "$line" != *=* ]]; then
+      log "invalid secret entry in secrets.env: $line"
+      log "use <ENV_VAR_NAME>=<macOS Keychain service name>"
+      exit 1
+    fi
+
+    env_name="${line%%=*}"
+    service="${line#*=}"
+
+    if ! [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      log "invalid secret environment variable name in secrets.env: $env_name"
+      log "use <ENV_VAR_NAME>=<macOS Keychain service name>"
+      exit 1
+    fi
+
+    if [ -z "$service" ]; then
+      log "empty Keychain service name for $env_name"
+      exit 1
+    fi
+
+    value=$(security find-generic-password -s "$service" -w 2>/dev/null) || {
+      service_arg=$(shell_quote "$service")
+      cat >&2 <<EOF
+rootcell: Keychain secret not found for $env_name.
+
+Add it with:
+  security add-generic-password -a "\$USER" -s $service_arg -w "<secret>"
+
+Then re-run.
+EOF
+      exit 1
+    }
+
+    INJECTED_SECRET_ENV+=("$env_name=$value")
+  done < "$REPO_DIR/secrets.env"
+}
 
 SPY_RAW=0
 SPY_DEDUPE=1
@@ -796,18 +853,8 @@ if [ "$SUBCMD" = provision ]; then
   exit 0
 fi
 
-# --- 5. Read the API key from Keychain -------------------------------------
-key=$(security find-generic-password -s aws-bedrock-api-key -w 2>/dev/null) || {
-  cat >&2 <<'EOF'
-rootcell: AWS Bedrock API key not found in macOS Keychain.
-
-Add it with:
-  security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "sk-..."
-
-Then re-run.
-EOF
-  exit 1
-}
+# --- 5. Read configured secrets from Keychain ------------------------------
+read_keychain_secrets
 
 # --- 6. Exec into the agent VM ---------------------------------------------
 if [ "$#" -eq 0 ]; then
@@ -823,7 +870,7 @@ fi
 # inserted into via security.pki.certificateFiles.
 exec limactl shell "$AGENT_VM" \
   env \
-  AWS_BEARER_TOKEN_BEDROCK="$key" \
+  "${INJECTED_SECRET_ENV[@]}" \
   AWS_REGION="${AWS_REGION:-us-east-1}" \
   NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
   SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \

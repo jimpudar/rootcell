@@ -3,10 +3,10 @@
 # All user-level tooling lives here. Iterate with `home-manager switch`,
 # which is fast and doesn't touch the system closure.
 #
-# Pi reads its provider key from the env. DON'T put it in this file — the
-# Nix store is world-readable. Export it from your shell each session, or
-# stash it in a non-tracked file inside the VM (the `rootcell` script reads
-# it from macOS Keychain on the host and exports it on `limactl shell`).
+# Pi reads provider keys from the env. DON'T put them in this file — the
+# Nix store is world-readable. Configure secret entries in secrets.env; `rootcell`
+# reads those macOS Keychain secrets on the host and exports them on
+# `limactl shell`.
 
 let
   net = import ./network.nix;

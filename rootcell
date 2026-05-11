@@ -331,7 +331,9 @@ repair_stale_socket_vmnet() {
 }
 
 diagnose_start_failure() {
-  local name="$1" log_file="$HOME/.lima/$name/ha.stderr.log" tail_out=""
+  local name="$1"
+  local log_file="$HOME/.lima/$name/ha.stderr.log"
+  local tail_out=""
   [ -f "$log_file" ] && tail_out=$(tail -80 "$log_file" 2>/dev/null || true)
 
   if echo "$tail_out" | grep -q 'Waiting for port to become available on .*:22' \

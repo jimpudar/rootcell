@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  # Keep PR runner selection controlled by the base branch. Fork PRs still
+  # get tested, but they cannot edit this workflow to request paid macOS
+  # runners before review.
+  pull_request_target:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-unit:
+    name: Static checks and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.pycache
+
+    steps:
+      - name: Check out pull request
+        if: ${{ github.event_name == 'pull_request_target' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Check out repository
+        if: ${{ github.event_name != 'pull_request_target' }}
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check shell syntax
+        run: bash -n agent test proxy/reload.sh
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: shellcheck --severity=warning agent test proxy/reload.sh
+
+      - name: Compile Python modules
+        run: python3 -m compileall proxy
+
+      - name: Run Python unit tests
+        run: python3 -m unittest discover -s proxy -p 'test_*.py'
+
+  nix-linux:
+    name: Nix Linux build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out pull request
+        if: ${{ github.event_name == 'pull_request_target' }}
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Check out repository
+        if: ${{ github.event_name != 'pull_request_target' }}
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ''
+
+      - name: Generate throwaway CI CA
+        run: |
+          mkdir -p pki
+          chmod 0700 pki
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout pki/agent-vm-ca.key \
+            -out pki/agent-vm-ca-cert.pem \
+            -days 1 \
+            -subj "/CN=agent-vm CI proxy CA" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            >/dev/null 2>&1
+          cat pki/agent-vm-ca.key pki/agent-vm-ca-cert.pem > pki/agent-vm-ca.pem
+          chmod 0600 pki/agent-vm-ca.key pki/agent-vm-ca.pem
+          chmod 0644 pki/agent-vm-ca-cert.pem
+          git add -f pki/agent-vm-ca-cert.pem
+
+      - name: Evaluate flake outputs
+        run: |
+          nix eval --raw .#nixosConfigurations.agent-vm.config.system.build.toplevel.drvPath
+          nix eval --raw .#nixosConfigurations.firewall-vm.config.system.build.toplevel.drvPath
+          nix eval --raw .#homeConfigurations.luser.activationPackage.drvPath
+
+      - name: Build Linux VM and Home Manager closures
+        run: |
+          nix build --print-build-logs \
+            .#nixosConfigurations.agent-vm.config.system.build.toplevel \
+            .#nixosConfigurations.firewall-vm.config.system.build.toplevel \
+            .#homeConfigurations.luser.activationPackage

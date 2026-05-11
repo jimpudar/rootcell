@@ -44,6 +44,6 @@ containerd:
 # shared with the firewall VM (default 192.168.106.0/24). The patched
 # launcher suppresses Lima's implicit default usernet NIC, so this is the
 # only agent NIC and appears as enp0s1 in the guest. The Lima network name
-# is overridden at create time by `./agent` from $LIMA_NETWORK in .env.
+# is overridden at create time by `./rootcell` from $LIMA_NETWORK in .env.
 networks:
   - lima: host

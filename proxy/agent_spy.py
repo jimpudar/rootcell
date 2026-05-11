@@ -2,7 +2,7 @@
 """Bedrock traffic capture and formatting helpers for the firewall VM.
 
 This module is intentionally stdlib-only. mitmproxy imports the capture
-helpers from its own Python environment, while `./agent spy` runs the same
+helpers from its own Python environment, while `./rootcell spy` runs the same
 file as a CLI inside the firewall VM to tail and format captured events.
 """
 

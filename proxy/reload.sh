@@ -3,7 +3,7 @@
 # reload dnsmasq. mitmproxy reloads its own allowlists on mtime change,
 # so it doesn't need a signal.
 #
-# Run inside the firewall VM by `./agent allow` on the host:
+# Run inside the firewall VM by `./rootcell allow` on the host:
 #   limactl shell firewall -- sudo /etc/agent-vm/reload.sh
 
 set -euo pipefail
@@ -31,7 +31,7 @@ mv -f "$tmp" "$dst"
 # `systemctl reload dnsmasq` sends SIGHUP, which only re-reads /etc/hosts
 # and the leases file — NOT the --conf-file=$dst. To pick up the new
 # server= lines we have to restart. dnsmasq comes back in milliseconds,
-# and `./agent allow` is interactive so the blip is acceptable.
+# and `./rootcell allow` is interactive so the blip is acceptable.
 systemctl restart dnsmasq
 
 echo "reload: dnsmasq reconfigured ($(wc -l < "$dst") lines); mitmproxy will pick up changes on its next event."

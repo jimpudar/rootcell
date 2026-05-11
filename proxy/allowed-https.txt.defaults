@@ -4,7 +4,7 @@
 # Python's fnmatch — i.e. `*.example.com` matches `foo.example.com` but
 # NOT `example.com`. List both forms when you want both.
 #
-# Edit this file then run `./agent allow` to hot-reload (no rebuild).
+# Edit this file then run `./rootcell allow` to hot-reload (no rebuild).
 
 # AWS Bedrock (the agent's LLM provider)
 bedrock-runtime.*.amazonaws.com

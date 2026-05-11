@@ -34,20 +34,20 @@ only run one mode per process). HTTPS is transparent by design; SSH
 stays explicit (hostname allowlist) and is **not** MITM'd — TLS
 intercepting SSH would break key-based auth from inside the VM.
 
-The three allowlist files are gitignored; `./agent` seeds each from its
+The three allowlist files are gitignored; `./rootcell` seeds each from its
 `.defaults` sibling on first run. Edit the live `*.txt` to customize;
-delete the live file and re-run `./agent` to reset to project defaults.
+delete the live file and re-run `./rootcell` to reset to project defaults.
 
 ## CA materials
 
-`./agent` generates a per-deployment CA the first time it runs and
+`./rootcell` generates a per-deployment CA the first time it runs and
 persists it under `pki/` on the host (gitignored). Three files:
 
 - `pki/agent-vm-ca.key` — RSA 2048 private key, mode 0600. Host only.
 - `pki/agent-vm-ca-cert.pem` — public cert. Shipped into the agent VM
   via `security.pki.certificateFiles` so the system trust store
   accepts mitmproxy-minted certs.
-- `pki/agent-vm-ca.pem` — key + cert concatenated. `./agent` pushes
+- `pki/agent-vm-ca.pem` — key + cert concatenated. `./rootcell` pushes
   this into the firewall VM at `/etc/agent-vm/agent-vm-ca.pem` (mode
   0600 root:root); systemd `LoadCredential` surfaces it to the
   mitmproxy services.
@@ -87,7 +87,7 @@ exfil, but a few gaps remain:
 
 ## Adding a host
 
-Edit the relevant file and run `./agent allow` from the repo root. The
+Edit the relevant file and run `./rootcell allow` from the repo root. The
 files are copied into the firewall VM and dnsmasq is reloaded; mitmproxy
 picks up changes on its next event (no restart). End-to-end takes ~1s.
 
@@ -127,7 +127,7 @@ Plain hostnames (no globs). dnsmasq matches as a suffix, so listing
 limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
 
 # What is the agent sending to Bedrock?
-./agent spy
+./rootcell spy
 
 # Is mitmproxy listening on both ports?
 limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
@@ -136,7 +136,7 @@ limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
 limactl shell firewall -- sudo nft list table ip agent-vm-nat
 
 # What's the agent VM seeing?
-./agent -- curl -v https://example.com 2>&1 | head -20
+./rootcell -- curl -v https://example.com 2>&1 | head -20
 
 # Allowlist content currently inside the VM:
 limactl shell firewall -- cat /etc/agent-vm/allowed-https.txt
@@ -146,7 +146,7 @@ limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
 ## Files in this directory
 
 - `allowed-https.txt.defaults` `allowed-ssh.txt.defaults`
-  `allowed-dns.txt.defaults` — checked-in seed allowlists. `./agent`
+  `allowed-dns.txt.defaults` — checked-in seed allowlists. `./rootcell`
   copies each to `<name>.txt` (gitignored) on first run.
 - `allowed-https.txt` `allowed-ssh.txt` `allowed-dns.txt` — gitignored,
   user-editable live allowlists. The single source of truth at runtime.
@@ -154,10 +154,10 @@ limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
   allowlist files from `/etc/agent-vm/` inside the firewall VM, with
   mtime-based hot reload.
 - `agent_spy.py` — stdlib-only Bedrock Runtime capture/formatter used by
-  `./agent spy`. It detects Bedrock by host + REST path, redacts auth
+  `./rootcell spy`. It detects Bedrock by host + REST path, redacts auth
   headers, summarizes binary JSON fields, decodes AWS event streams, and
   elides repeated prompt prefixes marked with `cachePoint` or
   `cache_control`.
-- `reload.sh` — runs inside the firewall VM after `./agent allow` copies
+- `reload.sh` — runs inside the firewall VM after `./rootcell allow` copies
   fresh allowlist files in. Regenerates dnsmasq's config and signals it.
 - This README.

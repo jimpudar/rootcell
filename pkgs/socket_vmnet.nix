@@ -5,7 +5,7 @@
 # Nix-store artifact (root-owned, immutable, byte-for-byte reproducible);
 # the only piece outside Nix is the one-time `sudo install` of this binary
 # into /opt/socket_vmnet/bin so Lima's sudoers grant has a stable target.
-# The `agent` script's preflight builds via this derivation, compares to
+# The `rootcell` script's preflight builds via this derivation, compares to
 # /opt/socket_vmnet, and prints the install command if it's missing or
 # stale. See README → "One-time host setup".
 #

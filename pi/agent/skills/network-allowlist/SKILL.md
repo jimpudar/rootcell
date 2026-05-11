@@ -55,7 +55,7 @@ You can't change the allowlist from in here. Ask the user:
 > - `proxy/allowed-dns.txt` — DNS suffixes (plain hostnames, suffix
 >   match: `github.com` covers `api.github.com` too).
 >
-> Then run `./agent allow` from the repo root (hot-reload, ~1s).
+> Then run `./rootcell allow` from the repo root (hot-reload, ~1s).
 
 A host that needs both DNS and HTTPS (the common case) has to go in
 both `allowed-dns.txt` and `allowed-https.txt`.

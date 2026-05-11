@@ -1,4 +1,4 @@
-_agent() {
+_rootcell() {
   local -a subcmds=(
     'provision:re-copy files and re-rebuild both VMs'
     'allow:hot-reload allowlists into the firewall VM'
@@ -7,4 +7,4 @@ _agent() {
   )
   _arguments '1: :{_describe subcommand subcmds}'
 }
-compdef _agent agent ./agent
+compdef _rootcell rootcell ./rootcell

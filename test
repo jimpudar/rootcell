@@ -4,7 +4,7 @@
 # Brings up a separate pair of VMs named `agent-test` and `firewall-test`
 # on test-only IPs (.10 firewall, .11 agent of the inter-VM subnet) so it
 # never disturbs prod VMs (defaults .2 and .3). Provisions them via
-# ./agent and runs assertions inside the test agent VM.
+# ./rootcell and runs assertions inside the test agent VM.
 #
 # Test VMs persist between runs by default — first provision is ~15 min,
 # every subsequent run is seconds. Use --clean to force a fresh build (to
@@ -24,7 +24,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # These names + IPs are what make the suite parallel-safe with prod VMs.
-# AGENT_VM_NAME / FIREWALL_VM_NAME are read by ./agent (see its lines 43-44).
+# AGENT_VM_NAME / FIREWALL_VM_NAME are read by ./rootcell (see its lines 43-44).
 # FIREWALL_IP / AGENT_IP override the network.nix defaults via .env-loader
 # precedence. LIMA_NETWORK and NETWORK_PREFIX inherit from .env / defaults.
 export AGENT_VM_NAME="agent-test"
@@ -67,9 +67,9 @@ if [ "$CLEAN" = 1 ]; then
   limactl delete -f "$AGENT_VM_NAME" "$FIREWALL_VM_NAME" 2>/dev/null || true
 fi
 
-# --- provision via ./agent --------------------------------------------------
+# --- provision via ./rootcell --------------------------------------------------
 log "provisioning test VMs (first run takes ~15 min)..."
-"$REPO_DIR/agent" provision
+"$REPO_DIR/rootcell" provision
 
 sync_default_allowlists() {
   # Force-sync the .defaults allowlists into the test firewall so the
@@ -133,7 +133,7 @@ checked_in_yamls_have_over_vsock() {
 
 agent_restarts_via_wrapper() {
   limactl stop "$AGENT_VM_NAME"
-  "$REPO_DIR/agent" provision
+  "$REPO_DIR/rootcell" provision
   sync_default_allowlists
   limactl shell "$AGENT_VM_NAME" -- true
 }
@@ -159,7 +159,7 @@ run "firewall Lima config has ssh.overVsock enabled" \
 run "agent Lima user has lingering enabled" \
   agent_sh 'loginctl show-user "$USER" -p Linger | grep -q Linger=yes'
 
-run "agent restarts via ./agent after locked-down networking" \
+run "agent restarts via ./rootcell after locked-down networking" \
   agent_restarts_via_wrapper
 
 run "firewall services active" \

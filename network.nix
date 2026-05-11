@@ -3,12 +3,12 @@
 # IPs, the subnet prefix, and the Lima named-network reference.
 #
 # Per-user overrides go in network-local.nix (gitignored), which the
-# `agent` script generates from .env on each invocation. If that file
+# `rootcell` script generates from .env on each invocation. If that file
 # doesn't exist (e.g. you're running `nix flake check` outside the
 # script), the defaults below apply.
 #
 # To change these for a single user account, edit .env (NOT this file)
-# and run `./agent provision`. To change the project-wide defaults, edit
+# and run `./rootcell provision`. To change the project-wide defaults, edit
 # this file. See README → "Running on multiple macOS user accounts" for
 # why you'd need to change them.
 

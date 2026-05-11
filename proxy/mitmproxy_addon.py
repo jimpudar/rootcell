@@ -37,7 +37,7 @@ cert via security.pki.certificateFiles — that's what makes the
 minted per-host certs verify.
 
 Allowlists live in /etc/agent-vm/ on the firewall VM. The addon stats
-them on every event and reloads on mtime change, so `./agent allow`
+them on every event and reloads on mtime change, so `./rootcell allow`
 takes effect with no service restart.
 """
 

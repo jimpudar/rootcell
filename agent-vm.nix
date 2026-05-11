@@ -63,7 +63,7 @@ in
   # (it was passthrough before) and presents per-host certs minted by a
   # per-deployment CA. Trust that CA system-wide so curl/git/openssl
   # accept the minted certs without `--insecure`. The cert is shipped
-  # in by ./agent (see AGENT_NIX_FILES); the matching key never leaves
+  # in by ./rootcell (see AGENT_NIX_FILES); the matching key never leaves
   # the host or the firewall VM.
   #
   # Why MITM instead of passthrough: passthrough binds the bytes only to

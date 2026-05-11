@@ -1,5 +1,5 @@
 {
-  description = "Disposable NixOS Lima VMs for agentic coding with pi (pi.dev)";
+  description = "rootcell: root-capable coding-agent workspaces with allowlisted egress";
 
   inputs = {
     # Must match what nixos-lima is built against. v0.0.5 = nixos-25.11.
@@ -23,7 +23,7 @@
       system = "aarch64-linux";
 
       # Username inside the guest. MUST agree with:
-      #   - GUEST_USER in ./agent
+      #   - GUEST_USER in ./rootcell
       #   - --set '.user.name = "<this>"' passed to limactl start
       username = "luser";
 
@@ -37,7 +37,7 @@
       };
 
       # Host-side packages — only socket_vmnet today, used by `nix build`
-      # in the agent script's preflight. socket_vmnet isn't in nixpkgs,
+      # in the rootcell script's preflight. socket_vmnet isn't in nixpkgs,
       # so we package it locally; see pkgs/socket_vmnet.nix and the
       # README for why this needs an explicit one-time `sudo install`.
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];

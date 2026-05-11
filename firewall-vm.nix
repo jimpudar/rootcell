@@ -57,7 +57,7 @@ in
 # dropped because there's no route. Belt-and-suspenders against any
 # escape via unredirected ports.
 #
-# Allowlists are mutable runtime files (NOT Nix-store) so `./agent allow`
+# Allowlists are mutable runtime files (NOT Nix-store) so `./rootcell allow`
 # can hot-reload them without a guest rebuild.
 
 {
@@ -140,7 +140,7 @@ in
   };
 
   # ── Mutable allowlist directory ───────────────────────────────────────
-  # `./agent allow` writes here via `limactl cp`, which connects as the
+  # `./rootcell allow` writes here via `limactl cp`, which connects as the
   # unprivileged Lima guest user — so the dir is owned by ${username},
   # not root. The dnsmasq-allowlist.conf seed is empty: dnsmasq's
   # pre-start check refuses to launch without the conf-file existing,
@@ -152,7 +152,7 @@ in
   # can overwrite root-owned files in a user-owned directory.
   #
   # The CA pem (key + cert) for TLS MITM is staged here too, but
-  # written by `./agent` via `limactl cp /tmp + sudo install -m 0600
+  # written by `./rootcell` via `limactl cp /tmp + sudo install -m 0600
   # -o root -g root` — never touchable by the lima user (who has
   # passwordless sudo, but the explicit ownership chmod makes the
   # blast radius "must already be root" rather than "any read of
@@ -168,7 +168,7 @@ in
   # ── mitmproxy ─────────────────────────────────────────────────────────
   # The addon is in /etc via environment.etc so it has a stable path that
   # systemd's strict sandboxing can read. It stats the allowlist files on
-  # every event and reloads on mtime change, so `./agent allow` takes
+  # every event and reloads on mtime change, so `./rootcell allow` takes
   # effect with no service restart.
   #
   # Both services bind 0.0.0.0 (not net.firewallIp) — even with
@@ -191,7 +191,7 @@ in
   # trusts), so we:
   #
   #   1. Stage the key+cert pem at /etc/agent-vm/agent-vm-ca.pem
-  #      (root-owned, mode 0600, written by `./agent`).
+  #      (root-owned, mode 0600, written by `./rootcell`).
   #   2. systemd LoadCredential reads it as root and surfaces it under
   #      $CREDENTIALS_DIRECTORY (a per-service tmpfs that only the
   #      service uid can read).
@@ -202,9 +202,9 @@ in
   #      RuntimeDirectory and finds mitmproxy-ca.pem already there.
   #
   # ConditionPathExists guards the bootstrap window: on the very first
-  # nixos-rebuild the CA is not yet copied in (./agent does that AFTER
+  # nixos-rebuild the CA is not yet copied in (./rootcell does that AFTER
   # rebuild — we can't `limactl cp` to /etc/agent-vm/ before tmpfiles
-  # creates the dir), so the services skip cleanly. ./agent then pushes
+  # creates the dir), so the services skip cleanly. ./rootcell then pushes
   # the CA and `systemctl restart`s, which re-evaluates the condition.
   systemd.services.mitmproxy-explicit = {
     description = "mitmproxy (explicit CONNECT — for SSH ProxyCommand)";
@@ -216,7 +216,7 @@ in
     # mtime, but it only re-reads function bodies — module-level state
     # (logger handler attachment, caches) is set once at process start.
     # Force a clean restart so addon edits actually take effect on
-    # `./agent provision`.
+    # `./rootcell provision`.
     restartTriggers = [ ./proxy/mitmproxy_addon.py ./proxy/agent_spy.py ];
     serviceConfig = {
       LoadCredential = "mitmproxy-ca.pem:/etc/agent-vm/agent-vm-ca.pem";
@@ -322,7 +322,7 @@ in
   };
 
   # ── Reload helper ─────────────────────────────────────────────────────
-  # `./agent allow` runs this after copying new allowlist files in.
+  # `./rootcell allow` runs this after copying new allowlist files in.
   environment.etc."agent-vm/reload.sh" = {
     source = ./proxy/reload.sh;
     mode = "0755";

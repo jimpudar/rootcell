@@ -166,7 +166,7 @@ run "firewall services active" \
   firewall_sh 'systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null'
 
 run "agent spy --help is wired" \
-  "$REPO_DIR/agent" spy --help
+  "$REPO_DIR/rootcell" spy --help
 
 run "firewall spy formatter installed" \
   firewall_sh 'test -x /etc/agent-vm/agent_spy.py && command -v python3 >/dev/null && test -d /run/agent-vm-spy'

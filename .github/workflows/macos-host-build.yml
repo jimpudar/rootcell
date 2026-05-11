@@ -1,0 +1,60 @@
+name: macOS Host Package Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_paid_macos:
+        description: Type RUN to confirm starting a paid macOS hosted runner.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-host-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize paid macOS runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Require repository owner and explicit confirmation
+        env:
+          ACTOR: ${{ github.actor }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          CONFIRM_PAID_MACOS: ${{ inputs.confirm_paid_macos }}
+        run: |
+          if [ "$ACTOR" != "$REPOSITORY_OWNER" ]; then
+            echo "::error::Only the repository owner ($REPOSITORY_OWNER) may start the paid macOS runner."
+            exit 1
+          fi
+
+          if [ "$CONFIRM_PAID_MACOS" != "RUN" ]; then
+            echo "::error::Set confirm_paid_macos to RUN to start the paid macOS runner."
+            exit 1
+          fi
+
+  darwin-host-packages:
+    name: Darwin host packages
+    needs: authorize
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Build Darwin-only host packages
+        run: |
+          nix build --print-build-logs \
+            .#packages.aarch64-darwin.lima \
+            .#packages.aarch64-darwin.socket_vmnet

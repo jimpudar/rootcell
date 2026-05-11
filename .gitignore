@@ -7,6 +7,9 @@ network-local.nix
 # Per-user env overrides, seeded from .env.defaults on first run.
 .env
 
+# Per-user Keychain secret mappings, seeded from secrets.env.defaults.
+secrets.env
+
 # Per-user egress allowlists, seeded from proxy/allowed-*.txt.defaults
 # on first run. Edit these directly + `./rootcell allow` to hot-reload.
 proxy/allowed-https.txt

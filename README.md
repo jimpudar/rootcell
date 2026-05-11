@@ -56,7 +56,7 @@ The two VMs have different jobs:
 | --- | --- |
 | `agent` VM | Runs `pi`, shell commands, Git, build tools, and project work. It has root inside the VM, but no direct public internet route. |
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
-| `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects the provider key for each session. |
+| `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
 `curl https://github.com` either works because the host is allowlisted, or fails
@@ -93,7 +93,7 @@ sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/
 # Let Lima use that helper without asking for sudo on every VM start.
 limactl sudoers | sudo tee /private/etc/sudoers.d/lima
 
-# Store the provider key in Keychain.
+# Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 
 # Start rootcell.
@@ -246,6 +246,7 @@ nixos.yaml               Lima config for the agent VM
 firewall.yaml            Lima config for the firewall VM
 network.nix              default inter-VM network settings
 .env.defaults            seed values for local `.env`
+secrets.env.defaults     seed Keychain secret mappings for local `secrets.env`
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
@@ -289,8 +290,20 @@ AGENT_IP=192.168.106.3
 NETWORK_PREFIX=24
 ```
 
-If you use a provider other than AWS Bedrock, edit `rootcell` so the Keychain
-service name and exported environment variables match your provider.
+`./rootcell` also seeds `secrets.env` from `secrets.env.defaults` on first run.
+This file maps agent VM environment variable names to macOS Keychain service
+names; it does not contain the secret values themselves:
+
+```sh
+AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key
+```
+
+For example, to inject an additional `ANTHROPIC_API_KEY`:
+
+```sh
+security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
+echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> secrets.env
+```
 
 If you want to use Anthropic or OpenAI subscriptions, you can log in from
 inside the VM.

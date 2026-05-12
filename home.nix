@@ -175,6 +175,8 @@ in
       user.email = lib.mkDefault "agent@localhost";
       init.defaultBranch = "main";
       pull.rebase = true;
+      push.default = "current";
+      push.autoSetupRemote = true;
     };
   };
 
@@ -191,8 +193,23 @@ in
     # we only want our own matchBlocks. Silences the deprecation warning
     # asking us to opt into the new explicit-defaults behavior.
     enableDefaultConfig = false;
-    matchBlocks."*".proxyCommand =
-      "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
+
+    matchBlocks."*" = {
+      proxyCommand = "${pkgs.netcat-openbsd}/bin/nc -X connect -x ${net.firewallIp}:8080 %h %p";
+    };
+
+    matchBlocks."ssh.dev.azure.com" = {
+      extraOptions = {
+        # Disable weak crypto warnings - Azure Devops does not support post-quantum yet
+        WarnWeakCrypto = "no-pq-kex";
+      };
+    };
+    matchBlocks."bitbucket.org" = {
+      extraOptions = {
+        WarnWeakCrypto = "no-pq-kex";
+      };
+    };
+
     # Look in our seeded read-only file in addition to the user-writable
     # default so first-run `git clone` doesn't prompt for known hosts.
     # home-manager's `programs.ssh.knownHosts` doesn't exist (that's a

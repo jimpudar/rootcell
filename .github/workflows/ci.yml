@@ -30,8 +30,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check shell syntax
-        run: bash -n rootcell test proxy/reload.sh
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install TypeScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck TypeScript
+        run: bun run typecheck
+
+      - name: Lint TypeScript
+        run: bun run lint
+
+      - name: Run TypeScript unit tests
+        run: bun test
+
+      - name: Check remaining shell syntax
+        run: bash -n aws-sso-creds.sh completions/rootcell.bash
 
       - name: Install ShellCheck
         run: |
@@ -39,7 +54,7 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning rootcell test proxy/reload.sh
+        run: shellcheck --severity=warning aws-sso-creds.sh completions/rootcell.bash
 
       - name: Compile Python modules
         run: python3 -m compileall proxy

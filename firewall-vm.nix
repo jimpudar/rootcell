@@ -2,6 +2,9 @@
 
 let
   net = import ./network.nix;
+  reloadSh = pkgs.runCommand "agent-vm-reload-sh" {} ''
+    ln -s /etc/agent-vm/reload.ts "$out"
+  '';
 in
 
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
@@ -65,6 +68,7 @@ in
 
   networking.hostName = "firewall-vm";
   environment.systemPackages = [
+    pkgs.bun
     (pkgs.python3.withPackages (ps: [ ps.textual ]))
   ];
 
@@ -329,8 +333,11 @@ in
 
   # ── Reload helper ─────────────────────────────────────────────────────
   # `./rootcell allow` runs this after copying new allowlist files in.
-  environment.etc."agent-vm/reload.sh" = {
-    source = ./proxy/reload.sh;
+  environment.etc."agent-vm/reload.ts" = {
+    source = ./src/bin/reload.ts;
     mode = "0755";
+  };
+  environment.etc."agent-vm/reload.sh" = {
+    source = reloadSh;
   };
 }

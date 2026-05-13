@@ -72,6 +72,7 @@ You need:
 
 - macOS with [Lima](https://lima-vm.io) installed.
 - [Nix](https://nixos.org/download) installed.
+- [Bun](https://bun.sh) installed.
 - Amazon Bedrock credentials stored in macOS Keychain.
 
 The default VM build targets Apple Silicon hosts. Intel hosts require the
@@ -87,6 +88,9 @@ prints. The full one-time setup is:
 
 ```bash
 chmod +x ./rootcell
+
+# Install Bun if it is not already available.
+curl -fsSL https://bun.sh/install | bash
 
 # Build the Lima vmnet helper packaged by this flake.
 nix build .#socket_vmnet
@@ -242,6 +246,7 @@ the same explicit network policy model across supported hosts.
 
 ```text
 rootcell                 host entry point for VM lifecycle and commands
+src/                     Bun TypeScript implementation for migrated entrypoints
 flake.nix                Nix inputs, VM outputs, and host packages
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config

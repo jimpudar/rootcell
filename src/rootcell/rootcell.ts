@@ -1,0 +1,881 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { parseRootcellArgs, parseSpyOptions, hasHelp } from "./args.ts";
+import { loadDotEnv, nixString, parseSecretMappings, seedRootcellLocalFiles } from "./env.ts";
+import { commandExists, runAsyncInherited, runCapture, runInherited } from "./process.ts";
+import type { RootcellConfig, SpyOptions, VmFileSet } from "./types.ts";
+
+const GUEST_USER = "luser";
+const SOCKET_VMNET_DST = "/opt/socket_vmnet/bin/socket_vmnet";
+
+const VM_FILES: VmFileSet = {
+  agent: [
+    "flake.nix",
+    "common.nix",
+    "agent-vm.nix",
+    "home.nix",
+    "git-local.nix",
+    "network.nix",
+    "network-local.nix",
+    "pi",
+    "pki/agent-vm-ca-cert.pem",
+  ],
+  firewall: [
+    "flake.nix",
+    "common.nix",
+    "firewall-vm.nix",
+    "network.nix",
+    "network-local.nix",
+    "proxy",
+    "src/bin/reload.ts",
+  ],
+};
+
+export const SPY_USAGE = `Usage: ./rootcell spy [--raw] [--no-dedupe] [--tui]
+
+Tail a formatted stream of AWS Bedrock Runtime requests and responses
+captured by the firewall VM's mitmproxy TLS interception.
+
+Options:
+  --raw        also print sanitized raw JSON bodies
+  --no-dedupe  do not elide repeated cache-marked prompt prefixes
+  --tui        browse captured traffic in an interactive Textual TUI
+  -h, --help   show this help
+`;
+
+function log(message: string): void {
+  console.error(`rootcell: ${message}`);
+}
+
+function firstToken(output: string): string {
+  const token = output.trim().split(/\s+/)[0];
+  if (token === undefined || token.length === 0) {
+    throw new Error("command produced no output");
+  }
+  return token;
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function repoDirFromImportMeta(importMetaPath: string): string {
+  let dir = dirname(resolve(importMetaPath));
+  for (;;) {
+    if (existsSync(join(dir, "flake.nix")) && existsSync(join(dir, "completions"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      return resolve(dirname(importMetaPath), "../..");
+    }
+    dir = parent;
+  }
+}
+
+export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv): RootcellConfig {
+  return {
+    repoDir,
+    agentVm: env.AGENT_VM_NAME ?? "agent",
+    firewallVm: env.FIREWALL_VM_NAME ?? "firewall",
+    guestUser: GUEST_USER,
+    guestRepoDir: `/home/${GUEST_USER}/rootcell`,
+    limaNetwork: env.LIMA_NETWORK ?? "host",
+    firewallIp: env.FIREWALL_IP ?? "192.168.106.2",
+    agentIp: env.AGENT_IP ?? "192.168.106.3",
+    networkPrefix: env.NETWORK_PREFIX ?? "24",
+    vmStartTimeout: env.VM_START_TIMEOUT ?? "180s",
+    socketVmnetDst: SOCKET_VMNET_DST,
+  };
+}
+
+class RootcellApp {
+  private limaBin: string;
+
+  constructor(private readonly config: RootcellConfig) {
+    this.limaBin = process.env.LIMACTL ?? "";
+  }
+
+  async run(rawArgs: readonly string[]): Promise<number> {
+    const parsed = parseRootcellArgs(rawArgs);
+    if (parsed.subcommand === "spy" && hasHelp(parsed.rest)) {
+      process.stdout.write(SPY_USAGE);
+      return 0;
+    }
+
+    const agentVm = this.config.agentVm;
+    const firewallVm = this.config.firewallVm;
+    seedRootcellLocalFiles(this.config.repoDir, log);
+    try {
+      loadDotEnv(join(this.config.repoDir, ".env"), process.env);
+    } catch (error) {
+      log(messageFromUnknown(error));
+      return 1;
+    }
+    const config = {
+      ...buildConfig(this.config.repoDir, process.env),
+      agentVm,
+      firewallVm,
+    };
+    const app = new RootcellApp(config);
+    return await app.runAfterEnvironment(parsed.subcommand, parsed.rest);
+  }
+
+  private async runAfterEnvironment(subcommand: string, rest: readonly string[]): Promise<number> {
+    let spyOptions: SpyOptions = { raw: false, dedupe: true, tui: false };
+    if (subcommand === "spy") {
+      try {
+        spyOptions = parseSpyOptions(rest);
+      } catch (error) {
+        log(messageFromUnknown(error));
+        process.stderr.write(SPY_USAGE);
+        return 2;
+      }
+    }
+
+    this.writeNetworkLocalNix();
+
+    if (subcommand === "pubkey") {
+      return this.printPubkey();
+    }
+
+    this.ensureSocketVmnet();
+    this.ensureLimaSudoers();
+
+    if (subcommand === "allow") {
+      const status = this.vmStatus(this.config.firewallVm);
+      if (status !== "Running") {
+        log("firewall VM not running; start it with ./rootcell first.");
+        return 1;
+      }
+      this.syncAllowlists();
+      log("allowlists reloaded.");
+      return 0;
+    }
+
+    this.repairStaleSocketVmnet();
+    this.ensureFirewall(subcommand === "provision");
+    this.ensureCa();
+    this.syncAllowlists();
+    this.waitForFirewallListeners();
+
+    if (subcommand === "spy") {
+      return await this.runSpy(spyOptions);
+    }
+
+    this.ensureAgent(subcommand === "provision");
+    if (subcommand === "provision") {
+      log("done.");
+      return 0;
+    }
+
+    const injectedSecretEnv = this.readKeychainSecrets();
+    const command = rest.length === 0 ? ["bash", "-l"] : [...rest];
+    return this.limactlInherited([
+      "shell",
+      this.config.agentVm,
+      "env",
+      ...injectedSecretEnv,
+      `AWS_REGION=${process.env.AWS_REGION ?? "us-east-1"}`,
+      "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+      ...command,
+    ], { allowFailure: true }).status;
+  }
+
+  private ensureLima(): void {
+    if (this.limaBin.length > 0) {
+      return;
+    }
+    const result = runCapture("nix", [
+      "build",
+      "--no-link",
+      "--print-out-paths",
+      `${this.config.repoDir}#lima`,
+    ], { allowFailure: true });
+    if (result.status !== 0) {
+      log(`failed to build repo-patched Lima from ${this.config.repoDir}/flake.nix:`);
+      process.stderr.write(prefixLines(result.stderr, "rootcell:   "));
+      process.exit(1);
+    }
+    if (result.stderr.length > 0) {
+      process.stderr.write(result.stderr);
+    }
+    this.limaBin = join(firstToken(result.stdout), "bin/limactl");
+  }
+
+  private limaEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      LIMA_DISABLE_DEFAULT_USERNET_FOR_VSOCK: this.config.agentVm,
+    };
+  }
+
+  private limactlCapture(args: readonly string[], allowFailure = false): ReturnType<typeof runCapture> {
+    this.ensureLima();
+    return runCapture(this.limaBin, args, {
+      env: this.limaEnv(),
+      allowFailure,
+    });
+  }
+
+  private limactlInherited(args: readonly string[], options: { readonly allowFailure?: boolean; readonly ignoredOutput?: boolean } = {}): ReturnType<typeof runInherited> {
+    this.ensureLima();
+    return runInherited(this.limaBin, args, {
+      env: this.limaEnv(),
+      ...(options.allowFailure === undefined ? {} : { allowFailure: options.allowFailure }),
+      ...(options.ignoredOutput === undefined ? {} : { ignoredOutput: options.ignoredOutput }),
+    });
+  }
+
+  private async limactlAsyncInherited(args: readonly string[]): Promise<number> {
+    this.ensureLima();
+    return await runAsyncInherited(this.limaBin, args, { env: this.limaEnv() });
+  }
+
+  private writeNetworkLocalNix(): void {
+    const content = [
+      "# Generated by ./rootcell from .env. DO NOT EDIT - change .env instead.",
+      "{",
+      `  firewallIp    = ${nixString(this.config.firewallIp)};`,
+      `  agentIp       = ${nixString(this.config.agentIp)};`,
+      `  networkPrefix = ${this.config.networkPrefix};`,
+      `  limaNetwork   = ${nixString(this.config.limaNetwork)};`,
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(this.config.repoDir, "network-local.nix"), content, "utf8");
+  }
+
+  private printPubkey(): number {
+    const status = this.limactlCapture(["list", "--format", "{{.Status}}", this.config.agentVm], true).stdout.trim();
+    if (status !== "Running") {
+      log("agent VM not running; start it with ./rootcell first.");
+      return 1;
+    }
+    const keyPath = `/home/${this.config.guestUser}/.ssh/id_rsa.pub`;
+    const keyExists = this.limactlInherited(["shell", this.config.agentVm, "--", "test", "-f", keyPath], {
+      allowFailure: true,
+      ignoredOutput: true,
+    }).status === 0;
+    if (!keyExists) {
+      log("no SSH key in agent VM yet; run ./rootcell provision first.");
+      return 1;
+    }
+    return this.limactlInherited(["shell", this.config.agentVm, "--", "cat", keyPath], { allowFailure: true }).status;
+  }
+
+  private ensureSocketVmnet(): void {
+    const result = runCapture("nix", [
+      "build",
+      "--no-link",
+      "--print-out-paths",
+      `${this.config.repoDir}#socket_vmnet`,
+    ], { allowFailure: true });
+    if (result.status !== 0) {
+      log(`failed to build socket_vmnet from ${this.config.repoDir}/pkgs/socket_vmnet.nix:`);
+      process.stderr.write(result.stderr);
+      process.exit(1);
+    }
+    if (result.stderr.length > 0) {
+      process.stderr.write(result.stderr);
+    }
+
+    const out = firstToken(result.stdout);
+    const nixBin = join(out, "bin/socket_vmnet");
+    if (existsSync(this.config.socketVmnetDst)) {
+      const cmp = runInherited("cmp", ["-s", nixBin, this.config.socketVmnetDst], {
+        allowFailure: true,
+        ignoredOutput: true,
+      });
+      if (cmp.status === 0) {
+        return;
+      }
+    }
+
+    process.stderr.write(`rootcell: socket_vmnet not installed (or out of date) at /opt/socket_vmnet.
+
+Why this needs sudo: Lima's sudoers grant references the binary by path,
+and macOS won't accept a sudoers rule for a user-writable location. The
+binary itself is built declaratively from this repo's flake (see
+pkgs/socket_vmnet.nix); the path below is in the Nix store and is
+root-owned and immutable. The only imperative step is the copy under
+/opt, which has to be sudo on macOS.
+
+Run:
+
+  sudo install -m 0755 -d /opt/socket_vmnet/bin
+  sudo install -m 0755 \\
+    ${out}/bin/socket_vmnet \\
+    ${out}/bin/socket_vmnet_client \\
+    /opt/socket_vmnet/bin/
+
+Then re-run ./rootcell.
+`);
+    process.exit(1);
+  }
+
+  private ensureLimaSudoers(): void {
+    if (existsSync("/private/etc/sudoers.d/lima")) {
+      return;
+    }
+    process.stderr.write(`rootcell: one-time host setup needed before first run.
+
+Lima's \`lima: host\` shared network needs a sudoers entry so socket_vmnet
+can manage the inter-VM network without prompting. Run:
+
+  limactl sudoers | sudo tee /private/etc/sudoers.d/lima
+
+Then re-run ./rootcell.
+`);
+    process.exit(1);
+  }
+
+  private vmStatus(name: string): string {
+    return this.limactlCapture(["list", "--format", "{{.Status}}", name], true).stdout.trim();
+  }
+
+  private socketVmnetPidfile(): string {
+    return `/private/var/run/lima/${this.config.limaNetwork}_socket_vmnet.pid`;
+  }
+
+  private socketVmnetSocket(): string {
+    return `/private/var/run/lima/socket_vmnet.${this.config.limaNetwork}`;
+  }
+
+  private socketVmnetIsStale(): boolean {
+    if (!existsSync(this.socketVmnetSocket())) {
+      return false;
+    }
+    const pidfile = this.socketVmnetPidfile();
+    if (!existsSync(pidfile)) {
+      return true;
+    }
+    const pid = readFileSync(pidfile, "utf8").trim();
+    if (pid.length === 0) {
+      return true;
+    }
+    return runInherited("ps", ["-p", pid], { allowFailure: true, ignoredOutput: true }).status !== 0;
+  }
+
+  private forceStopIfRunning(name: string): void {
+    if (this.vmStatus(name) === "Running") {
+      log(`force-stopping ${name} VM to repair stale ${this.config.limaNetwork} socket_vmnet network...`);
+      this.limactlInherited(["stop", "--force", name]);
+    }
+  }
+
+  private repairStaleSocketVmnet(): void {
+    if (!this.socketVmnetIsStale()) {
+      return;
+    }
+    log(`stale socket_vmnet daemon detected for Lima network '${this.config.limaNetwork}'.`);
+    log("restarting affected VMs one at a time so Lima recreates the VMNET pipe.");
+    this.forceStopIfRunning(this.config.agentVm);
+    this.forceStopIfRunning(this.config.firewallVm);
+  }
+
+  private diagnoseStartFailure(name: string): void {
+    const logFile = join(homedir(), ".lima", name, "ha.stderr.log");
+    if (!existsSync(logFile)) {
+      return;
+    }
+    const tail = readFileSync(logFile, "utf8").split(/\r?\n/).slice(-80).join("\n");
+    if (/Waiting for port to become available on .*:22/.test(tail) && !tail.includes("Started vsock forwarder")) {
+      log(`${name} VM did not establish Lima SSH over VSOCK.`);
+      log("Lima is waiting for guest TCP/22 on its default usernet path.");
+      log("The agent VM should be started with this repo's patched Lima, which skips that usernet NIC and polls VSOCK directly for SSH.");
+    }
+  }
+
+  private startVm(name: string): void {
+    const result = this.limactlInherited(["start", "--timeout", this.config.vmStartTimeout, name], {
+      allowFailure: true,
+    });
+    if (result.status === 0) {
+      return;
+    }
+    this.diagnoseStartFailure(name);
+    process.exit(1);
+  }
+
+  private ensureVmRunning(name: string, configPath: string): boolean {
+    const status = this.vmStatus(name);
+    switch (status) {
+      case "Running":
+        return false;
+      case "Stopped":
+        log(`starting ${name} VM...`);
+        this.startVm(name);
+        return false;
+      case "":
+        log(`${name} VM not found; creating (~3-5 min for image + boot)...`);
+        {
+          const result = this.limactlInherited([
+            "start",
+            "--timeout",
+            this.config.vmStartTimeout,
+            "--tty=false",
+            `--name=${name}`,
+            "--set",
+            `.user.name = "${this.config.guestUser}"`,
+            "--set",
+            `.networks[0].lima = "${this.config.limaNetwork}"`,
+            "--set",
+            ".ssh.overVsock = true",
+            configPath,
+          ], { allowFailure: true });
+          if (result.status !== 0) {
+            this.diagnoseStartFailure(name);
+            log(`limactl start ${name} failed; aborting.`);
+            process.exit(1);
+          }
+        }
+        return true;
+      default:
+        log(`${name} VM in unexpected state: '${status}'. Aborting.`);
+        process.exit(1);
+    }
+  }
+
+  private bootstrapAgentFirewallRoute(): void {
+    const script = `
+set -euo pipefail
+iface=enp0s1
+if [ -e /sys/class/net/enp0s2 ]; then
+  iface=enp0s2
+fi
+systemctl stop dhcpcd.service 2>/dev/null || true
+ip link set "$iface" up
+ip addr flush dev "$iface"
+ip addr add '${this.config.agentIp}/${this.config.networkPrefix}' dev "$iface"
+ip route replace default via '${this.config.firewallIp}' dev "$iface"
+if command -v resolvectl >/dev/null 2>&1; then
+  resolvectl dns "$iface" '${this.config.firewallIp}' || true
+  resolvectl domain "$iface" '~.' || true
+fi
+printf 'nameserver %s\\n' '${this.config.firewallIp}' > /etc/resolv.conf
+`;
+    this.limactlInherited(["shell", this.config.agentVm, "--", "sudo", "bash", "-lc", script]);
+  }
+
+  private bootstrapAgentFirewallTrust(): void {
+    const script = `
+set -euo pipefail
+cert='${this.config.guestRepoDir}/pki/agent-vm-ca-cert.pem'
+bundle=/tmp/agent-vm-bootstrap-ca-bundle.crt
+if [ -r /etc/ssl/certs/ca-certificates.crt ]; then
+  cat /etc/ssl/certs/ca-certificates.crt "$cert" > "$bundle"
+else
+  cp "$cert" "$bundle"
+fi
+chmod 0644 "$bundle"
+`;
+    this.limactlInherited(["shell", this.config.agentVm, "--", "bash", "-lc", script]);
+  }
+
+  private copyRepoIntoVm(vm: string, files: readonly string[]): void {
+    this.limactlInherited(["shell", vm, "--", "mkdir", "-p", this.config.guestRepoDir]);
+    for (const file of files) {
+      const parent = dirname(file);
+      const guestParent = parent === "." ? this.config.guestRepoDir : join(this.config.guestRepoDir, parent);
+      this.limactlInherited(["shell", vm, "--", "mkdir", "-p", guestParent]);
+      this.limactlInherited([
+        "cp",
+        "-r",
+        join(this.config.repoDir, file),
+        `${vm}:${guestParent}/`,
+      ]);
+    }
+  }
+
+  private writeGitLocalNix(): void {
+    const name = runCapture("git", ["config", "--global", "user.name"], { allowFailure: true }).stdout.trim();
+    const email = runCapture("git", ["config", "--global", "user.email"], { allowFailure: true }).stdout.trim();
+    const lines = ["{"];
+    if (name.length > 0) {
+      lines.push(`  programs.git.settings.user.name  = ${nixString(name)};`);
+    }
+    if (email.length > 0) {
+      lines.push(`  programs.git.settings.user.email = ${nixString(email)};`);
+    }
+    lines.push("}", "");
+    writeFileSync(join(this.config.repoDir, "git-local.nix"), lines.join("\n"), "utf8");
+  }
+
+  private waitForFirewallListeners(): void {
+    const probe = `
+for _ in $(seq 1 300); do
+  if ss -tlnH | awk "{print \\$4}" | grep -qE ":8080$" \\
+     && ss -tlnH | awk "{print \\$4}" | grep -qE ":8081$" \\
+     && ss -ulnH | awk "{print \\$4}" | grep -qE ":53$"; then
+    exit 0
+  fi
+  sleep 0.2
+done
+exit 1
+`;
+    const ready = this.limactlInherited(["shell", this.config.firewallVm, "--", "bash", "-c", probe], {
+      allowFailure: true,
+      ignoredOutput: true,
+    }).status === 0;
+    if (ready) {
+      return;
+    }
+    log("timeout waiting for firewall services");
+    this.limactlInherited([
+      "shell",
+      this.config.firewallVm,
+      "--",
+      "journalctl",
+      "--no-pager",
+      "-n",
+      "50",
+      "-u",
+      "mitmproxy-explicit",
+      "-u",
+      "mitmproxy-transparent",
+      "-u",
+      "dnsmasq",
+    ], { allowFailure: true });
+    process.exit(1);
+  }
+
+  private syncAllowlists(): void {
+    for (const file of ["proxy/allowed-https.txt", "proxy/allowed-ssh.txt", "proxy/allowed-dns.txt"]) {
+      this.limactlInherited([
+        "cp",
+        join(this.config.repoDir, file),
+        `${this.config.firewallVm}:/etc/agent-vm/${file.split("/").at(-1) ?? file}`,
+      ]);
+    }
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "/etc/agent-vm/reload.sh"]);
+  }
+
+  private ensureCa(): void {
+    const dir = join(this.config.repoDir, "pki");
+    const key = join(dir, "agent-vm-ca.key");
+    const crt = join(dir, "agent-vm-ca-cert.pem");
+    const pem = join(dir, "agent-vm-ca.pem");
+    if (existsSync(key) && existsSync(crt) && existsSync(pem)) {
+      return;
+    }
+
+    log("generating TLS-MITM CA in pki/ (one-time, persists across runs)");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    runInherited("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      key,
+      "-out",
+      crt,
+      "-days",
+      "3650",
+      "-subj",
+      "/CN=agent-vm proxy CA",
+      "-addext",
+      "basicConstraints=critical,CA:TRUE,pathlen:0",
+      "-addext",
+      "keyUsage=critical,keyCertSign,cRLSign",
+    ], { ignoredOutput: true });
+    writeFileSync(pem, readFileSync(key, "utf8") + readFileSync(crt, "utf8"), "utf8");
+    chmodSync(key, 0o600);
+    chmodSync(pem, 0o600);
+    chmodSync(crt, 0o644);
+  }
+
+  private syncFirewallCa(): void {
+    const pem = join(this.config.repoDir, "pki/agent-vm-ca.pem");
+    this.limactlInherited(["cp", pem, `${this.config.firewallVm}:/tmp/.agent-vm-ca.pem.staged`]);
+    this.limactlInherited([
+      "shell",
+      this.config.firewallVm,
+      "--",
+      "sudo",
+      "install",
+      "-m",
+      "0600",
+      "-o",
+      "root",
+      "-g",
+      "root",
+      "/tmp/.agent-vm-ca.pem.staged",
+      "/etc/agent-vm/agent-vm-ca.pem",
+    ]);
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "rm", "-f", "/tmp/.agent-vm-ca.pem.staged"]);
+  }
+
+  private hostTimeZone(): string {
+    if (process.env.TZ !== undefined && process.env.TZ.length > 0) {
+      return process.env.TZ;
+    }
+    try {
+      const link = readlinkSync("/etc/localtime");
+      for (const prefix of ["/usr/share/zoneinfo/", "/var/db/timezone/zoneinfo/"]) {
+        if (link.startsWith(prefix)) {
+          return link.slice(prefix.length);
+        }
+      }
+      const marker = "/zoneinfo/";
+      const markerAt = link.lastIndexOf(marker);
+      if (markerAt >= 0) {
+        return link.slice(markerAt + marker.length);
+      }
+    } catch {
+      // Fall through to systemsetup.
+    }
+    if (commandExists("systemsetup")) {
+      return runCapture("systemsetup", ["-gettimezone"], { allowFailure: true }).stdout.replace(/^Time Zone: /, "").trim();
+    }
+    return "";
+  }
+
+  private async runSpy(options: SpyOptions): Promise<number> {
+    const spySession = `/run/agent-vm-spy/enabled.${String(process.pid)}`;
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "install", "-d", "-m", "1777", "/run/agent-vm-spy"]);
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "install", "-m", "0666", "/dev/null", "/run/agent-vm-spy/events.ndjson"]);
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "touch", "/run/agent-vm-spy/enabled", spySession]);
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "chmod", "0666", "/run/agent-vm-spy/enabled", spySession]);
+
+    const cleanup = (): void => {
+      const script = `
+rm -f '${spySession}'
+if ls /run/agent-vm-spy/enabled.* >/dev/null 2>&1; then
+  touch /run/agent-vm-spy/enabled
+  chmod 0666 /run/agent-vm-spy/enabled
+else
+  rm -f /run/agent-vm-spy/enabled
+fi
+`;
+      this.limactlInherited(["shell", this.config.firewallVm, "--", "sudo", "sh", "-lc", script], {
+        allowFailure: true,
+        ignoredOutput: true,
+      });
+    };
+
+    const onSignal = (signal: NodeJS.Signals): void => {
+      cleanup();
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
+    log(`spying on Bedrock Runtime traffic from ${this.config.firewallVm} (Ctrl-C to stop)...`);
+    let status: number;
+    if (options.tui) {
+      const tuiArgs = ["--events", "/run/agent-vm-spy/events.ndjson"];
+      const tuiEnv = ["PYTHONUNBUFFERED=1"];
+      if (options.raw) {
+        tuiArgs.push("--raw");
+      }
+      if (!options.dedupe) {
+        tuiArgs.push("--no-dedupe");
+      }
+      const zone = this.hostTimeZone();
+      if (zone.length > 0) {
+        tuiEnv.push(`AGENT_SPY_LOCAL_TZ=${zone}`);
+      }
+      status = await this.limactlAsyncInherited([
+        "shell",
+        this.config.firewallVm,
+        "--",
+        "sudo",
+        "env",
+        ...tuiEnv,
+        "python3",
+        "/etc/agent-vm/agent_spy_tui.py",
+        ...tuiArgs,
+      ]);
+    } else {
+      const formatterArgs = ["tail"];
+      if (options.raw) {
+        formatterArgs.push("--raw");
+      }
+      if (!options.dedupe) {
+        formatterArgs.push("--no-dedupe");
+      }
+      status = await this.limactlAsyncInherited([
+        "shell",
+        this.config.firewallVm,
+        "--",
+        "sudo",
+        "env",
+        "PYTHONUNBUFFERED=1",
+        "python3",
+        "/etc/agent-vm/agent_spy.py",
+        ...formatterArgs,
+      ]);
+    }
+
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+    cleanup();
+    return status;
+  }
+
+  private ensureFirewall(force: boolean): void {
+    let needsProvision = force;
+    if (this.ensureVmRunning(this.config.firewallVm, join(this.config.repoDir, "firewall.yaml"))) {
+      needsProvision = true;
+    }
+    if (!needsProvision) {
+      const check = `
+systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
+ && systemctl is-active mitmproxy-transparent >/dev/null 2>&1 \\
+ && systemctl is-active dnsmasq >/dev/null 2>&1 \\
+ && test -x /etc/agent-vm/agent_spy.py \\
+ && test -x /etc/agent-vm/agent_spy_tui.py \\
+ && python3 -c "import textual"
+`;
+      if (this.limactlInherited(["shell", this.config.firewallVm, "--", "bash", "-lc", check], {
+        allowFailure: true,
+        ignoredOutput: true,
+      }).status !== 0) {
+        needsProvision = true;
+      }
+    }
+    if (!needsProvision) {
+      return;
+    }
+
+    log("provisioning firewall VM (first run takes ~5 min)...");
+    this.writeGitLocalNix();
+    this.ensureCa();
+    this.copyRepoIntoVm(this.config.firewallVm, VM_FILES.firewall);
+    this.limactlInherited(["shell", this.config.firewallVm, "--", "bash", "-lc", `
+set -e
+cd '${this.config.guestRepoDir}'
+sudo nixos-rebuild switch --flake .#firewall-vm
+`]);
+    this.syncFirewallCa();
+    this.limactlInherited([
+      "shell",
+      this.config.firewallVm,
+      "--",
+      "sudo",
+      "systemctl",
+      "restart",
+      "mitmproxy-explicit",
+      "mitmproxy-transparent",
+    ]);
+    log("firewall provisioning complete.");
+  }
+
+  private ensureAgent(force: boolean): void {
+    let needsProvision = force;
+    if (this.ensureVmRunning(this.config.agentVm, join(this.config.repoDir, "nixos.yaml"))) {
+      needsProvision = true;
+    }
+    if (!needsProvision) {
+      const hasPi = this.limactlInherited(["shell", this.config.agentVm, "--", "bash", "-lc", "command -v pi >/dev/null 2>&1"], {
+        allowFailure: true,
+        ignoredOutput: true,
+      }).status === 0;
+      if (!hasPi) {
+        needsProvision = true;
+      }
+    }
+    if (!needsProvision) {
+      return;
+    }
+
+    log("provisioning agent VM (first run takes ~10 min: nixpkgs fetch via firewall)...");
+    this.writeGitLocalNix();
+    this.copyRepoIntoVm(this.config.agentVm, VM_FILES.agent);
+    this.bootstrapAgentFirewallRoute();
+    this.bootstrapAgentFirewallTrust();
+    this.limactlInherited(["shell", this.config.agentVm, "--", "bash", "-lc", `
+set -e
+cd '${this.config.guestRepoDir}'
+export NIX_SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+export SSL_CERT_FILE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+export GIT_SSL_CAINFO=/tmp/agent-vm-bootstrap-ca-bundle.crt
+export REQUESTS_CA_BUNDLE=/tmp/agent-vm-bootstrap-ca-bundle.crt
+sudo env \\
+  NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE" \\
+  SSL_CERT_FILE="$SSL_CERT_FILE" \\
+  GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
+  REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
+  nixos-rebuild switch --flake .#agent-vm
+nix run nixpkgs#home-manager -- switch --flake .#${this.config.guestUser}
+`]);
+    log("agent provisioning complete.");
+    const pubkey = this.limactlCapture(["shell", this.config.agentVm, "--", "cat", `/home/${this.config.guestUser}/.ssh/id_rsa.pub`], true).stdout.trim();
+    if (pubkey.length > 0) {
+      process.stderr.write(`
+rootcell: this VM's SSH public key (register at https://github.com/settings/keys
+to enable \`git push git@github.com:...\` from inside the VM):
+
+${pubkey}
+
+Run \`./rootcell pubkey\` to print it again.
+
+`);
+    }
+  }
+
+  private readKeychainSecrets(): string[] {
+    const path = join(this.config.repoDir, "secrets.env");
+    if (!existsSync(path)) {
+      return [];
+    }
+    let mappings;
+    try {
+      mappings = parseSecretMappings(readFileSync(path, "utf8"));
+    } catch (error) {
+      log(messageFromUnknown(error));
+      process.exit(1);
+    }
+
+    const injected: string[] = [];
+    for (const mapping of mappings) {
+      const value = runCapture("security", ["find-generic-password", "-s", mapping.service, "-w"], {
+        allowFailure: true,
+      });
+      if (value.status !== 0) {
+        const serviceArg = shellQuote(mapping.service);
+        process.stderr.write(`rootcell: Keychain secret not found for ${mapping.envName}.
+
+Add it with:
+  security add-generic-password -a "$USER" -s ${serviceArg} -w "<secret>"
+
+Then re-run.
+`);
+        process.exit(1);
+      }
+      injected.push(`${mapping.envName}=${value.stdout.replace(/\r?\n$/, "")}`);
+    }
+    return injected;
+  }
+}
+
+function prefixLines(text: string, prefix: string): string {
+  return text.split(/\r?\n/).filter((line) => line.length > 0).map((line) => `${prefix}${line}`).join("\n") + "\n";
+}
+
+function messageFromUnknown(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function rootcellMain(args: readonly string[], importMetaPath: string): Promise<number> {
+  const repoDir = repoDirFromImportMeta(importMetaPath);
+  const app = new RootcellApp(buildConfig(repoDir, process.env));
+  return await app.run(args);
+}

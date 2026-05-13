@@ -77,6 +77,11 @@ You need:
 The default VM build targets Apple Silicon hosts. Intel hosts require the
 architecture changes described in [Changing Architecture](#changing-architecture).
 
+If your host Nix install has not enabled flakes and the new CLI yet, add
+`--extra-experimental-features 'nix-command flakes'` to host-side `nix`
+commands, for example:
+`nix --extra-experimental-features 'nix-command flakes' build .#socket_vmnet`.
+
 The easiest path is to run `./rootcell` once and follow the exact commands it
 prints. The full one-time setup is:
 
@@ -260,7 +265,8 @@ pkgs/socket_vmnet.nix    local package for Lima's vmnet helper
 Stop the VMs but keep their disks and Nix store caches:
 
 ```bash
-limactl stop agent firewall
+limactl stop agent
+limactl stop firewall
 ./rootcell
 ```
 

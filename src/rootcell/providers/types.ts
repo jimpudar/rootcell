@@ -58,6 +58,7 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
     readonly name: string;
     readonly network: TAttachment;
   }): Promise<{ readonly created: boolean }>;
+  forgetSshHostKey?(name: string): Promise<void>;
 
   exec(name: string, command: readonly string[], options?: ExecOptions): Promise<InheritedCommandResult>;
   execCapture(name: string, command: readonly string[], options?: ExecOptions): Promise<CommandResult>;

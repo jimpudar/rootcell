@@ -165,7 +165,7 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
 
 export function macFor(config: RootcellConfig, role: string, name: string): string {
   const digest = createHash("sha256")
-    .update(`${config.instanceName}:${role}:${name}`)
+    .update(`${config.repoDir}:${config.instanceName}:${role}:${name}`)
     .digest();
   return [
     0x52,

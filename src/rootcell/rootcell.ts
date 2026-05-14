@@ -540,6 +540,7 @@ set -e
 cd '${this.config.guestRepoDir}'
 sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
 `]);
+    await this.providers.vm.forgetSshHostKey?.(this.config.firewallVm);
     await this.syncFirewallCa();
     await this.providers.vm.exec(this.config.firewallVm, [
       "sudo",
@@ -596,6 +597,7 @@ sudo env \\
   nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
 nix run nixpkgs#home-manager -- switch --flake .#${this.config.guestUser}
 `]);
+    await this.providers.vm.forgetSshHostKey?.(this.config.agentVm);
     log("agent provisioning complete.");
     const pubkey = (await this.providers.vm.execCapture(this.config.agentVm, ["cat", `/home/${this.config.guestUser}/.ssh/id_rsa.pub`], {
       allowFailure: true,

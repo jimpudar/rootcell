@@ -8,7 +8,7 @@ import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import { limaListJsonContainsSocket, limaStatusFromOutput } from "./providers/lima.ts";
 import { MacOsSocketVmnetNetworkProvider } from "./providers/macos-socket-vmnet.ts";
-import { MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
+import { macFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
 import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
 import {
   imageDownloadUrl,
@@ -17,7 +17,7 @@ import {
   ROOTCELL_GUEST_API_VERSION,
   ROOTCELL_IMAGE_SCHEMA_VERSION,
 } from "./images.ts";
-import { sshConfig } from "./transports/proxyjump-ssh.ts";
+import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -229,6 +229,14 @@ describe("VM and network providers", () => {
     expect(plan.vms.firewall.privateSocketPath).toContain("/repo/.rootcell/instances/dev/vfkit/network/firewall-private.sock");
   });
 
+  test("vfkit MACs are stable per repo instance and distinct across worktrees", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const otherWorktree = buildConfig("/other-repo", {}, fakeInstance("dev"));
+
+    expect(macFor(config, "firewall", "control")).toBe(macFor(config, "firewall", "control"));
+    expect(macFor(config, "firewall", "control")).not.toBe(macFor(otherWorktree, "firewall", "control"));
+  });
+
   test("vfkit args include EFI, cloud-init, expected NICs, and no VSOCK", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const network = new MacOsVfkitNetworkProvider(config, ignoreLog).plan().vms.firewall;
@@ -261,6 +269,8 @@ describe("VM and network providers", () => {
     });
     expect(agent).toContain("for path in /sys/class/net/*");
     expect(agent).toContain("MACAddress=52:54:00:4e:1d:de");
+    expect(agent).toContain("lock_passwd: false");
+    expect(agent).toContain("hashed_passwd:");
     expect(agent).toContain("addr='192.168.109.3/24'");
     expect(agent).toContain("ip route replace default via \"$gateway\"");
     expect(agent).toContain("printf 'nameserver %s\\n' \"$gateway\" > /etc/resolv.conf");
@@ -292,6 +302,33 @@ describe("VM and network providers", () => {
     expect(configText).toContain("Host rootcell-agent");
     expect(configText).toContain("ProxyJump rootcell-firewall");
     expect(configText).toContain("IdentityFile /instance/ssh/rootcell_control_ed25519");
+    expect(configText).toContain("BatchMode yes");
+    expect(configText).toContain("PasswordAuthentication no");
+    expect(configText).toContain("KbdInteractiveAuthentication no");
+  });
+
+  test("proxyjump known_hosts removal clears only the rotated VM host", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rootcell-known-hosts-"));
+    try {
+      const path = join(dir, "known_hosts");
+      writeFileSync(path, [
+        "192.168.64.12 ssh-ed25519 firewall",
+        "192.168.109.3 ssh-ed25519 old-agent",
+        "[192.168.109.3]:22 ssh-ed25519 bracketed-agent",
+        "github.com ssh-ed25519 github",
+        "",
+      ].join("\n"));
+
+      forgetKnownHost(path, "192.168.109.3");
+
+      const content = readFileSync(path, "utf8");
+      expect(content).toContain("192.168.64.12 ssh-ed25519 firewall");
+      expect(content).not.toContain("old-agent");
+      expect(content).not.toContain("bracketed-agent");
+      expect(content).toContain("github.com ssh-ed25519 github");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("Lima status output maps to provider-neutral VM states", () => {

@@ -8,7 +8,6 @@ import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { CopyToGuestOptions, ExecOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 import type { VfkitNetworkAttachment } from "./macos-vfkit-network.ts";
 import { ProxyJumpSshTransport, type ProxyJumpSshEndpoints } from "../transports/proxyjump-ssh.ts";
-import type { GuestTransport } from "../transports/types.ts";
 
 interface VfkitVmState {
   readonly provider: "vfkit";
@@ -28,7 +27,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
   readonly id = "vfkit";
   private vfkitBin = process.env.ROOTCELL_VFKIT ?? "";
   private readonly imageStore: ImageStore;
-  private readonly transport: GuestTransport;
+  private readonly transport: ProxyJumpSshTransport;
 
   constructor(
     private readonly config: RootcellConfig,
@@ -114,6 +113,11 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
 
   copyToGuest(name: string, hostPath: string, guestPath: string, options: CopyToGuestOptions = {}): Promise<void> {
     return this.transport.copyToGuest(name, hostPath, guestPath, options);
+  }
+
+  forgetSshHostKey(name: string): Promise<void> {
+    this.transport.forgetHostKey(name);
+    return Promise.resolve();
   }
 
   private startVm(input: { readonly role: VmRole; readonly name: string; readonly network: VfkitNetworkAttachment }): void {
@@ -234,7 +238,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
     }
     for (let attempt = 0; attempt < 120; attempt += 1) {
       const leaseIp = lookupDhcpLease(network.controlMac, undefined, "firewall-vm");
-      if (leaseIp !== null && arpHasIp(leaseIp)) {
+      if (leaseIp !== null && arpHasIpForMac(leaseIp, network.controlMac)) {
         return leaseIp;
       }
       const arpIp = lookupArpIpByMac(network.controlMac);
@@ -381,6 +385,8 @@ export function vfkitCloudInitUserData(input: {
     `  - name: ${input.user}`,
     "    groups: [wheel, users]",
     "    shell: /run/current-system/sw/bin/bash",
+    "    lock_passwd: false",
+    "    hashed_passwd: '$6$oNa2PyJnJvk0BPB0$V33WZJn774wIiCOV.s1pTybr31f.VGEGSOp2aPbQQ3GQpk6mHfF99NOMFv5CLU.CZqYLhlcUhaW72zAhDW/BG1'",
     "    sudo: ALL=(ALL) NOPASSWD:ALL",
     "    ssh_authorized_keys:",
     `      - ${input.publicKey}`,
@@ -506,9 +512,13 @@ function lookupArpIpByMac(mac: string): string | null {
   return null;
 }
 
-function arpHasIp(ip: string): boolean {
+function arpHasIpForMac(ip: string, mac: string): boolean {
+  const normalized = normalizeMac(mac);
   const output = runCapture("arp", ["-an"], { allowFailure: true }).stdout;
-  return output.split(/\r?\n/).some((line) => line.includes(`(${ip})`) && line.includes(" at ") && !line.includes("(incomplete)"));
+  return output.split(/\r?\n/).some((line) => {
+    const match = /\(([0-9.]+)\)\s+at\s+([0-9a-f:]+)/i.exec(line);
+    return match?.[1] === ip && match[2] !== undefined && normalizeMac(match[2]) === normalized;
+  });
 }
 
 function normalizeMac(mac: string): string {

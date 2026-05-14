@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
 import type { RootcellConfig } from "../types.ts";
@@ -59,6 +59,15 @@ export class ProxyJumpSshTransport implements GuestTransport {
     return Promise.resolve();
   }
 
+  forgetHostKey(name: string): void {
+    const endpoints = this.endpoints();
+    const host = name === this.config.firewallVm ? endpoints.firewallHost : name === this.config.agentVm ? endpoints.agentHost : null;
+    if (host === null) {
+      throw new Error(`unknown rootcell VM for SSH transport: ${name}`);
+    }
+    forgetKnownHost(endpoints.knownHostsPath, host);
+  }
+
   private sshArgs(name: string): readonly string[] {
     return [
       "-F",
@@ -94,6 +103,31 @@ export class ProxyJumpSshTransport implements GuestTransport {
   }
 }
 
+export function forgetKnownHost(knownHostsPath: string, host: string): void {
+  if (!existsSync(knownHostsPath)) {
+    return;
+  }
+  const original = readFileSync(knownHostsPath, "utf8");
+  const lines = original.split(/\r?\n/);
+  const kept = lines.filter((line) => !knownHostsLineMatchesHost(line, host));
+  if (kept.length === lines.length) {
+    return;
+  }
+  writeFileSync(knownHostsPath, kept.join("\n"), { encoding: "utf8", mode: 0o600 });
+}
+
+function knownHostsLineMatchesHost(line: string, host: string): boolean {
+  const trimmed = line.trimStart();
+  if (trimmed.length === 0 || trimmed.startsWith("#") || trimmed.startsWith("|")) {
+    return false;
+  }
+  const marker = trimmed.split(/\s+/, 1)[0];
+  if (marker === undefined) {
+    return false;
+  }
+  return marker.split(",").some((candidate) => candidate === host || candidate === `[${host}]:22`);
+}
+
 function inheritOptions(options: ExecOptions): { readonly allowFailure?: boolean; readonly ignoredOutput?: boolean } {
   return {
     ...(options.allowFailure === undefined ? {} : { allowFailure: options.allowFailure }),
@@ -116,6 +150,9 @@ export function sshConfig(input: {
     `  UserKnownHostsFile ${input.knownHostsPath}`,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
+    "  BatchMode yes",
+    "  PasswordAuthentication no",
+    "  KbdInteractiveAuthentication no",
     "  ConnectTimeout 5",
     "  LogLevel ERROR",
     "",
@@ -127,6 +164,9 @@ export function sshConfig(input: {
     `  UserKnownHostsFile ${input.knownHostsPath}`,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
+    "  BatchMode yes",
+    "  PasswordAuthentication no",
+    "  KbdInteractiveAuthentication no",
     "  ConnectTimeout 5",
     "  LogLevel ERROR",
     "",

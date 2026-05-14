@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { parseRootcellArgs, parseSpyOptions, hasHelp } from "./args.ts";
+import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { commandExists, runAsyncInherited, runCapture, runInherited } from "./process.ts";
@@ -37,18 +37,6 @@ const VM_FILES: VmFileSet = {
     "src/bin/reload.ts",
   ],
 };
-
-export const SPY_USAGE = `Usage: ./rootcell spy [--raw] [--no-dedupe] [--tui]
-
-Tail a formatted stream of AWS Bedrock Runtime requests and responses
-captured by the firewall VM's mitmproxy TLS interception.
-
-Options:
-  --raw        also print sanitized raw JSON bodies
-  --no-dedupe  do not elide repeated cache-marked prompt prefixes
-  --tui        browse captured traffic in an interactive Textual TUI
-  -h, --help   show this help
-`;
 
 function log(message: string): void {
   console.error(`rootcell: ${message}`);
@@ -118,18 +106,7 @@ class RootcellApp {
     this.limaBin = process.env.LIMACTL ?? "";
   }
 
-  async runAfterEnvironment(subcommand: string, rest: readonly string[]): Promise<number> {
-    let spyOptions: SpyOptions = { raw: false, dedupe: true, tui: false };
-    if (subcommand === "spy") {
-      try {
-        spyOptions = parseSpyOptions(rest);
-      } catch (error) {
-        log(messageFromUnknown(error));
-        process.stderr.write(SPY_USAGE);
-        return 2;
-      }
-    }
-
+  async runAfterEnvironment(subcommand: string, rest: readonly string[], spyOptions: SpyOptions): Promise<number> {
     this.writeNetworkLocalNix();
 
     if (subcommand === "pubkey") {
@@ -178,6 +155,7 @@ class RootcellApp {
       "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
       "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+      "--",
       ...command,
     ], { allowFailure: true }).status;
   }
@@ -970,9 +948,8 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     return 2;
   }
 
-  if (parsed.subcommand === "spy" && hasHelp(parsed.rest)) {
-    process.stdout.write(SPY_USAGE);
-    return 0;
+  if (parsed.kind === "handled") {
+    return parsed.status;
   }
 
   try {
@@ -980,7 +957,7 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     loadDotEnv(join(repoDir, ".rootcell", "instances", parsed.instanceName, ".env"), process.env);
     const instance = loadRootcellInstance(repoDir, parsed.instanceName, process.env);
     const app = new RootcellApp(buildConfig(repoDir, process.env, instance));
-    return await app.runAfterEnvironment(parsed.subcommand, parsed.rest);
+    return await app.runAfterEnvironment(parsed.subcommand, parsed.rest, parsed.spyOptions);
   } catch (error) {
     log(messageFromUnknown(error));
     return 1;

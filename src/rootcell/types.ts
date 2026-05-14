@@ -1,4 +1,5 @@
 import type { SpawnSyncReturns } from "node:child_process";
+import type { RootcellSubcommand } from "./metadata.ts";
 
 export interface CommandResult {
   readonly status: number;
@@ -35,11 +36,20 @@ export interface RootcellConfig {
   readonly rootcellVmnetHelperDst: string;
 }
 
-export interface ParsedRootcellArgs {
+export interface ParsedRootcellRunArgs {
+  readonly kind: "run";
   readonly instanceName: string;
   readonly subcommand: RootcellSubcommand | "";
   readonly rest: readonly string[];
+  readonly spyOptions: SpyOptions;
 }
+
+export interface ParsedRootcellHandledArgs {
+  readonly kind: "handled";
+  readonly status: number;
+}
+
+export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs;
 
 export interface InstanceState {
   readonly schemaVersion: 1;
@@ -81,5 +91,3 @@ export interface VmFileSet {
 }
 
 export type SyncSpawnResult = SpawnSyncReturns<string>;
-
-import type { RootcellSubcommand } from "./metadata.ts";

@@ -1,21 +1,29 @@
-_rootcell() {
-  local cur prev suggestion
-  cur="${COMP_WORDS[COMP_CWORD]}"
-  prev="${COMP_WORDS[COMP_CWORD-1]}"
-  if [ "$prev" = "--instance" ]; then
-    COMPREPLY=()
-    if [ -d .rootcell/instances ]; then
-      while IFS= read -r suggestion; do
-        case "$suggestion" in
-          "$cur"*) COMPREPLY+=("$suggestion") ;;
-        esac
-      done < <(command ls -1 .rootcell/instances 2>/dev/null)
+###-begin-rootcell-completions-###
+#
+# yargs command completion script
+#
+# Installation: rootcell completion >> ~/.bashrc
+#    or rootcell completion >> ~/.bash_profile on OSX.
+#
+_rootcell_yargs_completions()
+{
+    local cur_word args type_list
+
+    cur_word="${COMP_WORDS[COMP_CWORD]}"
+    args=("${COMP_WORDS[@]}")
+
+    # ask yargs to generate completions.
+    # see https://stackoverflow.com/a/40944195/7080036 for the spaces-handling awk
+    mapfile -t type_list < <(rootcell --get-yargs-completions "${args[@]}")
+    mapfile -t COMPREPLY < <(compgen -W "$( printf '%q ' "${type_list[@]}" )" -- "${cur_word}" |
+        awk '/ / { print "\""$0"\"" } /^[^ ]+$/ { print $0 }')
+
+    # if no match was found, fall back to filename completion
+    if [ ${#COMPREPLY[@]} -eq 0 ]; then
+      COMPREPLY=()
     fi
-  elif [ "$COMP_CWORD" -eq 1 ] || { [ "${COMP_WORDS[1]}" = "--instance" ] && [ "$COMP_CWORD" -eq 3 ]; }; then
-    COMPREPLY=()
-    while IFS= read -r suggestion; do
-      COMPREPLY+=("$suggestion")
-    done < <(compgen -W "--instance provision allow pubkey spy" -- "$cur")
-  fi
+
+    return 0
 }
-complete -F _rootcell rootcell ./rootcell
+complete -o bashdefault -o default -F _rootcell_yargs_completions rootcell
+###-end-rootcell-completions-###

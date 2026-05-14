@@ -1,59 +1,102 @@
 import { describe, expect, test } from "bun:test";
-import { parseRootcellArgs, parseSpyOptions } from "./args.ts";
+import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { buildConfig } from "./rootcell.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import { runCapture } from "./process.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { RootcellInstance } from "./types.ts";
+import type { ParsedRootcellRunArgs, RootcellInstance } from "./types.ts";
 
 const ignoreLog = (): void => undefined;
 
 describe("rootcell argument parsing", () => {
-  test("parses known subcommands and leaves pass-through args intact", () => {
-    expect(parseRootcellArgs(["provision", "ignored"])).toEqual({
+  test("parses known subcommands", () => {
+    expect(runArgs(["provision"])).toEqual({
+      kind: "run",
       instanceName: "default",
       subcommand: "provision",
-      rest: ["ignored"],
+      rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(parseRootcellArgs(["--", "nix", "flake", "update"])).toEqual({
+    expect(() => parseRootcellArgs(["provision", "ignored"])).toThrow("Too many non-option arguments");
+  });
+
+  test("parses pass-through guest commands", () => {
+    expect(runArgs(["--", "nix", "flake", "update"])).toEqual({
+      kind: "run",
       instanceName: "default",
       subcommand: "",
-      rest: ["--", "nix", "flake", "update"],
+      rest: ["nix", "flake", "update"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+    expect(runArgs(["pi", "--model", "sonnet"])).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "",
+      rest: ["pi", "--model", "sonnet"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
     });
   });
 
-  test("parses leading instance flags", () => {
-    expect(parseRootcellArgs(["--instance", "dev", "provision"])).toEqual({
+  test("parses instance flags in any command position", () => {
+    expect(runArgs(["--instance", "dev", "provision"])).toEqual({
+      kind: "run",
       instanceName: "dev",
       subcommand: "provision",
       rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(parseRootcellArgs(["--instance=dev", "--", "--instance", "not-rootcell"])).toEqual({
+    expect(runArgs(["allow", "--instance=dev"])).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "allow",
+      rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+    expect(runArgs(["pi", "--instance", "dev", "--model", "sonnet"])).toEqual({
+      kind: "run",
       instanceName: "dev",
       subcommand: "",
-      rest: ["--", "--instance", "not-rootcell"],
+      rest: ["pi", "--model", "sonnet"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
     });
   });
 
   test("rejects invalid instance names", () => {
     expect(() => parseRootcellArgs(["--instance", "../dev"])).toThrow("invalid instance name");
-    expect(() => parseRootcellArgs(["--instance", "dev-"])).toThrow("invalid instance name");
+    expect(() => parseRootcellArgs(["provision", "--instance", "dev-"])).toThrow("invalid instance name");
   });
 
   test("parses spy flags", () => {
-    expect(parseSpyOptions(["--tui", "--raw", "--no-dedupe"])).toEqual({
-      raw: true,
-      dedupe: false,
-      tui: true,
+    expect(runArgs(["spy", "--tui", "--raw", "--no-dedupe"])).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "spy",
+      rest: [],
+      spyOptions: { raw: true, dedupe: false, tui: true },
     });
   });
 
   test("rejects unknown spy flags", () => {
-    expect(() => parseSpyOptions(["--bogus"])).toThrow("unknown spy option");
+    expect(() => parseRootcellArgs(["spy", "--bogus"])).toThrow("Unknown argument: bogus");
+  });
+
+  test("rejects unknown rootcell flags before commands", () => {
+    expect(() => parseRootcellArgs(["--bogus", "provision"])).toThrow("Unknown argument: bogus");
+    expect(() => parseRootcellArgs(["--raw", "spy"])).toThrow("Unknown argument: raw");
+  });
+
+  test("prints help without selecting a VM command", () => {
+    const result = runCapture("./rootcell", ["--help"]);
+    expect(result.stdout).toContain("Commands:");
+    expect(result.stdout).toContain("rootcell completion");
+
+    const helpCommand = runCapture("./rootcell", ["help"]);
+    expect(helpCommand.stdout).toContain("Commands:");
   });
 });
 
@@ -164,15 +207,46 @@ describe("reload helper", () => {
 });
 
 describe("completion files", () => {
-  test("bash and zsh completions include all typed subcommands", () => {
+  test("bash and zsh completions are generated by yargs", () => {
     const bash = readFileSync("completions/rootcell.bash", "utf8");
     const zsh = readFileSync("completions/rootcell.zsh", "utf8");
+    expect(bash).toBe(generatedCompletion("/bin/bash"));
+    expect(zsh).toBe(generatedCompletion("/bin/zsh"));
+    expect(bash).toContain("yargs command completion script");
+    expect(zsh).toContain("yargs command completion script");
+  });
+
+  test("yargs completion API includes all typed subcommands", () => {
+    const choices = runCapture("./rootcell", ["--get-yargs-completions", "rootcell", ""], {
+      env: completionEnv("/bin/bash"),
+    }).stdout;
     for (const subcommand of ROOTCELL_SUBCOMMANDS) {
-      expect(bash).toContain(subcommand.name);
-      expect(zsh).toContain(subcommand.name);
+      expect(choices).toContain(subcommand.name);
     }
   });
 });
+
+function runArgs(args: readonly string[]): ParsedRootcellRunArgs {
+  const parsed = parseRootcellArgs(args);
+  if (parsed.kind !== "run") {
+    throw new Error("expected parsed rootcell run args");
+  }
+  return parsed;
+}
+
+function generatedCompletion(shell: string): string {
+  return stripTrailingBlankLine(runCapture("./rootcell", ["completion"], { env: completionEnv(shell) }).stdout);
+}
+
+function completionEnv(shell: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, SHELL: shell };
+  delete env.ZSH_NAME;
+  return env;
+}
+
+function stripTrailingBlankLine(text: string): string {
+  return text.endsWith("\n\n") ? text.slice(0, -1) : text;
+}
 
 describe("Lima templates", () => {
   test("checked-in Lima YAMLs use unmanaged socket networks", () => {

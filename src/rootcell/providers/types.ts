@@ -15,6 +15,7 @@ export interface GuestNetworkConfig {
   readonly agentPrivateInterface: string;
   readonly firewallPrivateInterface: string;
   readonly firewallEgressInterface: string;
+  readonly firewallControlInterface?: string;
 }
 
 export interface VmNetworkAttachment {

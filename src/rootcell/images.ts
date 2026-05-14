@@ -18,7 +18,7 @@ import type { RootcellConfig } from "./types.ts";
 export const ROOTCELL_IMAGE_SCHEMA_VERSION = 1;
 export const ROOTCELL_GUEST_API_VERSION = 1;
 export const ROOTCELL_CLI_IMAGE_CONTRACT_VERSION = 1;
-export const DEFAULT_IMAGE_MANIFEST_URL = "https://github.com/jimpudar/rootcell-images/releases/latest/download/manifest.json";
+export const DEFAULT_IMAGE_MANIFEST_URL = "https://github.com/rootcell-ai/rootcell-images/releases/latest/download/manifest.json";
 
 export type RootcellImageRole = "agent" | "firewall" | "builder";
 export type RootcellImageCompression = "zstd" | "none";

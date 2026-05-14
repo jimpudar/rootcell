@@ -1,6 +1,6 @@
 # rootcell
 
-[![build](https://img.shields.io/github/actions/workflow/status/jimpudar/rootcell/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/jimpudar/rootcell/actions/workflows/ci.yml)
+[![build](https://img.shields.io/github/actions/workflow/status/rootcell-ai/rootcell/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/rootcell-ai/rootcell/actions/workflows/ci.yml)
 
 Give the agent root in the cell, not on your host.
 
@@ -133,7 +133,7 @@ selected.
 Image resolution is controlled by:
 
 ```bash
-ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/jimpudar/rootcell-images/releases/latest/download/manifest.json
+ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/rootcell-ai/rootcell-images/releases/latest/download/manifest.json
 ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-images
 ```
 

@@ -24,8 +24,10 @@ in
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
-  # The socket_vmnet link from nixos.yaml. The kernel names it via systemd's
-  # predictable scheme. With the default usernet NIC suppressed, this is enp0s1.
+  systemd.network.wait-online.enable = false;
+  # The private link from nixos.yaml/vfkit is enp0s1. Cloud-init performs a
+  # MAC-matched bootstrap before provisioning, then this NixOS config owns the
+  # steady-state interface.
   systemd.network.networks."10-enp0s1" = {
     matchConfig.Name = "enp0s1";
     networkConfig = {
@@ -72,7 +74,9 @@ in
   # tolerates cert errors) would establish a clean tunnel. With MITM,
   # mitmproxy is the TLS *client* upstream and the attacker IP can't
   # produce a valid allowed.com cert — so no bytes flow.
-  security.pki.certificateFiles = [ ./pki/agent-vm-ca-cert.pem ];
+  security.pki.certificateFiles =
+    lib.optional (builtins.pathExists ./pki/agent-vm-ca-cert.pem)
+      ./pki/agent-vm-ca-cert.pem;
 
   # Common SDK trust-store env vars. NixOS's security.pki.certificateFiles
   # adds the CA to /etc/ssl/certs/ca-certificates.crt, which curl, git,

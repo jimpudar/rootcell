@@ -9,6 +9,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
+import { DEFAULT_IMAGE_MANIFEST_URL, buildLocalImages } from "./images.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { commandExists, runCapture, runInherited } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
@@ -22,6 +23,8 @@ const VM_FILES: VmFileSet = {
     "flake.nix",
     "common.nix",
     "agent-vm.nix",
+    "builder-vm.nix",
+    "vfkit-image.nix",
     "home.nix",
     "network.nix",
     "pi",
@@ -30,6 +33,8 @@ const VM_FILES: VmFileSet = {
     "flake.nix",
     "common.nix",
     "firewall-vm.nix",
+    "builder-vm.nix",
+    "vfkit-image.nix",
     "network.nix",
     "proxy",
     "src/bin/reload.ts",
@@ -83,6 +88,8 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
     vmnetSocketPath: instance.state.socketPath,
     vmnetPidPath: instance.state.pidPath,
     vmStartTimeout: env.VM_START_TIMEOUT ?? "180s",
+    imageManifestUrl: env.ROOTCELL_IMAGE_MANIFEST_URL ?? DEFAULT_IMAGE_MANIFEST_URL,
+    ...(env.ROOTCELL_IMAGE_DIR === undefined || env.ROOTCELL_IMAGE_DIR.length === 0 ? {} : { imageDir: env.ROOTCELL_IMAGE_DIR }),
   };
 }
 
@@ -97,6 +104,14 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
   }
 
   async runAfterEnvironment(subcommand: string, rest: readonly string[], spyOptions: SpyOptions): Promise<number> {
+    if (subcommand === "images") {
+      if (rest.length !== 1 || rest[0] !== "build") {
+        log("usage: ./rootcell images build");
+        return 2;
+      }
+      return buildLocalImages(this.config, log);
+    }
+
     this.writeNetworkLocalNix();
 
     if (subcommand === "pubkey") {
@@ -193,10 +208,15 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
     const network = this.networkPlan.guest;
     const script = `
 set -euo pipefail
-iface=enp0s1
-if [ -e /sys/class/net/enp0s2 ]; then
-  iface=enp0s2
-fi
+iface=''
+for path in /sys/class/net/*; do
+  candidate="\${path##*/}"
+  if [ "$candidate" != lo ]; then
+    iface="$candidate"
+    break
+  fi
+done
+test -n "$iface"
 systemctl stop dhcpcd.service 2>/dev/null || true
 ip link set "$iface" up
 ip addr flush dev "$iface"
@@ -385,6 +405,11 @@ exit 1
     await this.providers.vm.exec(this.config.firewallVm, ["rm", "-f", "/tmp/.agent-vm-ca.pem.staged"]);
   }
 
+  private nixosConfiguration(role: "agent" | "firewall"): string {
+    const base = role === "agent" ? "agent-vm" : "firewall-vm";
+    return this.providers.vm.id === "vfkit" ? `${base}-vfkit` : base;
+  }
+
   private hostTimeZone(): string {
     if (process.env.TZ !== undefined && process.env.TZ.length > 0) {
       return process.env.TZ;
@@ -525,7 +550,7 @@ systemctl is-active mitmproxy-explicit >/dev/null 2>&1 \\
     await this.providers.vm.exec(this.config.firewallVm, ["bash", "-lc", `
 set -e
 cd '${this.config.guestRepoDir}'
-sudo nixos-rebuild switch --flake .#firewall-vm
+sudo nixos-rebuild switch --flake .#${this.nixosConfiguration("firewall")}
 `]);
     await this.syncFirewallCa();
     await this.providers.vm.exec(this.config.firewallVm, [
@@ -580,7 +605,7 @@ sudo env \\
   SSL_CERT_FILE="$SSL_CERT_FILE" \\
   GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
   REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
-  nixos-rebuild switch --flake .#agent-vm
+  nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
 nix run nixpkgs#home-manager -- switch --flake .#${this.config.guestUser}
 `]);
     log("agent provisioning complete.");

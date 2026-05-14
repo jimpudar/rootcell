@@ -20,7 +20,7 @@ rootcell is early and intentionally narrow. Today it targets:
 - **Coding harness:** [Pi](https://pi.dev) inside the agent VM.
 
 The agent and firewall environments are NixOS VMs, but the host-side lifecycle,
-networking, Keychain integration, and Lima configuration currently assume macOS.
+networking, Keychain integration, and VM lifecycle currently assume macOS.
 
 ## Why This Exists
 
@@ -45,7 +45,8 @@ an explicit network boundary around the work.
 
 ```mermaid
 flowchart LR
-  Host["macOS host<br/>repo, Keychain, ./rootcell"] -->|limactl over VSOCK| Agent["agent VM<br/>NixOS, pi, dev tools"]
+  Host["macOS host<br/>repo, Keychain, ./rootcell"] -->|SSH| Firewall["firewall VM<br/>dnsmasq, mitmproxy"]
+  Host -->|SSH ProxyJump through firewall| Agent["agent VM<br/>NixOS, pi, dev tools"]
   Agent -->|DNS, HTTPS, SSH| Firewall["firewall VM<br/>dnsmasq, mitmproxy"]
   Firewall -->|allowlisted egress| Internet["internet"]
 ```
@@ -75,7 +76,7 @@ Cleartext HTTP is denied. All egress is expected to be HTTPS or SSH.
 
 You need:
 
-- macOS with [Lima](https://lima-vm.io) installed.
+- macOS with [vfkit](https://github.com/crc-org/vfkit) available through Nix.
 - [Nix](https://nixos.org/download) installed.
 - [Bun](https://bun.sh) installed.
 - Amazon Bedrock credentials stored in macOS Keychain.
@@ -86,7 +87,7 @@ architecture changes described in [Changing Architecture](#changing-architecture
 If your host Nix install has not enabled flakes and the new CLI yet, add
 `--extra-experimental-features 'nix-command flakes'` to host-side `nix`
 commands, for example:
-`nix --extra-experimental-features 'nix-command flakes' build .#socket_vmnet`.
+`nix --extra-experimental-features 'nix-command flakes' build .#vfkit`.
 
 The easiest path is to run `./rootcell` once and follow the exact commands it
 prints. The full one-time setup is:
@@ -97,20 +98,8 @@ chmod +x ./rootcell
 # Install Bun if it is not already available.
 curl -fsSL https://bun.sh/install | bash
 
-# Build the Lima vmnet helper packaged by this flake.
-nix build .#socket_vmnet
-
-# Install it at the root-owned path rootcell's helper expects.
-sudo install -m 0755 -d /opt/socket_vmnet/bin
-sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/
-
-# Install rootcell's stable vmnet helper and sudoers rule.
-sudo install -m 0755 -d /opt/rootcell/bin
-sudo install -m 0755 src/bin/rootcell-vmnet-helper.sh /opt/rootcell/bin/rootcell-vmnet
-sudo chown root:wheel /opt/rootcell/bin/rootcell-vmnet
-printf '%s\n' '%staff ALL=(root:wheel) NOPASSWD:NOSETENV: /opt/rootcell/bin/rootcell-vmnet *' \
-  | sudo tee /private/etc/sudoers.d/rootcell-vmnet >/dev/null
-sudo chmod 0440 /private/etc/sudoers.d/rootcell-vmnet
+# Confirm the default vfkit host package builds.
+nix build .#vfkit
 
 # Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
@@ -119,14 +108,49 @@ security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 ./rootcell
 ```
 
-Why the sudo install? macOS `vmnet.framework` requires `socket_vmnet` to run as
-root. Rootcell installs one root-owned helper with a stable sudoers rule; the
-helper starts one unmanaged socket_vmnet daemon per instance. New instances do
-not require editing `~/.lima/_config/networks.yaml` or regenerating Lima
-sudoers.
+First run downloads compatible rootcell VM images from the `rootcell-images`
+release manifest, creates instance-local vfkit disks, and provisions the VMs.
+Later runs normally take seconds.
 
-First run usually takes about 15 minutes because both VMs are created and
-rebuilt. Later runs normally take seconds.
+### VM Provider Selection
+
+vfkit is the default VM provider:
+
+```bash
+./rootcell
+```
+
+The Lima provider remains as a rollback path while vfkit support settles:
+
+```bash
+ROOTCELL_VM_PROVIDER=lima ./rootcell
+```
+
+The legacy Lima path still requires the one-time `socket_vmnet` and
+`rootcell-vmnet` sudo setup printed by `./rootcell` when that provider is
+selected.
+
+Image resolution is controlled by:
+
+```bash
+ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/jimpudar/rootcell-images/releases/latest/download/manifest.json
+ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-images
+```
+
+`ROOTCELL_IMAGE_DIR` must contain `manifest.json` plus the image files named in
+that manifest. For local development of image artifacts:
+
+```bash
+./rootcell images build
+```
+
+That command builds the same `packages.aarch64-linux.rootcellImages` artifact
+that the separate `rootcell-images` release repository publishes. It first
+tries a direct host `nix build`; on macOS without an `aarch64-linux` builder it
+downloads or reuses the published `builder` image, boots it with vfkit, and
+runs the host build with an ephemeral `ssh-ng://` Nix remote builder. The result
+link is written to `.rootcell/images/dist`. The builder VM is local tooling only
+and is not part of the rootcell agent/firewall security boundary.
 
 ## Daily Workflow
 
@@ -226,7 +250,7 @@ complete data-loss-prevention system.
 
 What it does:
 
-- Keeps the host filesystem out of the VM by disabling Lima's default mounts.
+- Keeps the host filesystem out of the VM by avoiding default host mounts.
 - Gives the agent VM only a private link to the firewall VM.
 - Routes DNS through a suffix allowlist.
 - Intercepts HTTPS at the firewall and checks both TLS SNI and HTTP `Host`.
@@ -267,6 +291,8 @@ flake.nix                Nix inputs, VM outputs, and host packages
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
 firewall-vm.nix          firewall VM services and nftables rules
+vfkit-image.nix          raw EFI image settings for rootcell-images builds
+builder-vm.nix           local image-builder VM config
 home.nix                 pi, Git, SSH, and developer tools for the agent VM
 nixos.yaml               Lima config for the agent VM
 firewall.yaml            Lima config for the firewall VM
@@ -283,6 +309,16 @@ pkgs/socket_vmnet.nix    local package for Lima's vmnet helper
 ```
 
 ## VM Lifecycle
+
+vfkit instance state lives under `.rootcell/instances/<name>/vfkit/`. The host
+control key and generated SSH config live under `.rootcell/instances/<name>/ssh/`.
+The agent VM is reached through SSH ProxyJump via the firewall VM; no VSOCK
+device is attached on the vfkit path.
+
+### Lima Rollback
+
+The commands below apply to the legacy Lima provider when run with
+`ROOTCELL_VM_PROVIDER=lima`.
 
 Stop the VMs but keep their disks and Nix store caches:
 
@@ -385,7 +421,7 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 
 - `system` in `flake.nix`
 - The pi release tarball URL and hash in `home.nix`
-- The image URL, `arch`, and digest in both Lima YAML files
+- The rootcell image manifest and role image artifacts
 
 ### Multiple Instances
 
@@ -397,17 +433,15 @@ Named instances are isolated from each other:
 ```
 
 Each instance gets its own VMs, state directory, CA, allowlists, Keychain mapping
-file, vmnet UUID, Unix socket, and `/24`. Rootcell starts socket_vmnet directly
-through `/opt/rootcell/bin/rootcell-vmnet`, so adding an instance does not touch
-`~/.lima/_config/networks.yaml`.
+file, control SSH key, private-link sockets, and `/24`.
 
 The `default` instance migrates from legacy repo-local files on first run: if
 `.env`, `secrets.env`, `proxy/allowed-*.txt`, or `pki/` already exist, rootcell
 copies them into `.rootcell/instances/default/`. Named instances seed from the
 checked-in defaults.
 
-Existing VMs created with the old managed `lima: host` network must be recreated
-because Lima network attachments are creation-time configuration:
+Existing VMs created by the legacy Lima provider are not migrated in place. Use
+the Lima rollback provider to delete them if needed:
 
 ```bash
 limactl delete agent firewall --force
@@ -419,7 +453,7 @@ limactl delete agent firewall --force
 See what the firewall is denying:
 
 ```bash
-limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
+./rootcell --instance default spy
 ```
 
 See formatted Bedrock Runtime requests and responses:
@@ -433,8 +467,8 @@ See formatted Bedrock Runtime requests and responses:
 Check that firewall services are listening:
 
 ```bash
-limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
-limactl shell firewall -- ss -uln '( sport = :53 )'
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  "ss -tln '( sport = :8080 or sport = :8081 )' && ss -uln '( sport = :53 )'"
 ```
 
 Test an HTTPS allowlist entry from inside the VM:
@@ -446,8 +480,8 @@ Test an HTTPS allowlist entry from inside the VM:
 Inspect the live allowlists inside the firewall VM:
 
 ```bash
-limactl shell firewall -- cat /etc/agent-vm/allowed-https.txt
-limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  "cat /etc/agent-vm/allowed-https.txt && cat /etc/agent-vm/dnsmasq-allowlist.conf"
 ```
 
 ## License

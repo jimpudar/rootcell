@@ -360,19 +360,22 @@ Do not put provider keys in `home.nix`; the Nix store is world-readable.
 
 ### Shell Completions
 
-Both completion files register `rootcell` and `./rootcell`, including the
-`provision`, `allow`, `pubkey`, and `spy` subcommands.
+`rootcell completion` prints the yargs-generated completion script. The checked-in
+files under `completions/` are generated from that command; refresh them with
+`bun run completions` after changing commands or options. The generated scripts
+register `rootcell`, so put `rootcell` on `PATH` before sourcing or installing
+them.
 
 For zsh, after `compinit`:
 
 ```sh
-source /path/to/rootcell/completions/rootcell.zsh
+rootcell completion >> ~/.zshrc
 ```
 
 For bash:
 
 ```sh
-source /path/to/rootcell/completions/rootcell.bash
+rootcell completion >> ~/.bashrc
 ```
 
 ### Changing Architecture

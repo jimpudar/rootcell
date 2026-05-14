@@ -45,9 +45,8 @@ containerd:
 # Two NICs (kernel names assigned by systemd predictable naming):
 #   enp0s1 — Apple Virtio NAT (always present with vmType: vz; gives the
 #            firewall its internet egress; default route lives here)
-#   enp0s2 — lima:host private segment shared with the agent VM (default
-#            192.168.106.0/24; the Lima network name and IPs are
-#            overridable via .env — see README and network.nix)
+#   enp0s2 — per-instance socket_vmnet segment shared with the agent VM
+#            (the /24 and socket path are allocated by ./rootcell)
 #
 # We don't redeclare the Virtio NAT here. `vzNAT: true` would be
 # redundant with vmType: vz's default. The Lima `interface:` field used
@@ -55,4 +54,4 @@ containerd:
 # device — the kernel uses systemd predictable names regardless — so it
 # was misleading and is dropped.
 networks:
-  - lima: host
+  - socket: /private/var/run/rootcell/placeholder/default.sock

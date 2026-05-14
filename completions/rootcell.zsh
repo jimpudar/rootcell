@@ -5,6 +5,8 @@ _rootcell() {
     'pubkey:print the agent VM SSH public key'
     'spy:tail formatted Bedrock traffic from the firewall VM'
   )
-  _arguments '1: :{_describe subcommand subcmds}'
+  _arguments \
+    '--instance[select rootcell instance]:instance:_files -W .rootcell/instances -/' \
+    '1: :{_describe subcommand subcmds}'
 }
 compdef _rootcell rootcell ./rootcell

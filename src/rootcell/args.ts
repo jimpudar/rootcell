@@ -1,12 +1,37 @@
 import { isRootcellSubcommand } from "./metadata.ts";
+import { validateInstanceName } from "./instance.ts";
 import type { ParsedRootcellArgs, SpyOptions } from "./types.ts";
 
 export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
-  const first = args[0];
-  if (isRootcellSubcommand(first)) {
-    return { subcommand: first, rest: args.slice(1) };
+  let instanceName = "default";
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (arg === "--") {
+      break;
+    }
+    if (arg === "--instance") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        throw new Error("--instance requires a name");
+      }
+      instanceName = validateInstanceName(value);
+      index += 2;
+      continue;
+    }
+    if (arg?.startsWith("--instance=")) {
+      instanceName = validateInstanceName(arg.slice("--instance=".length));
+      index += 1;
+      continue;
+    }
+    break;
   }
-  return { subcommand: "", rest: [...args] };
+
+  const first = args[index];
+  if (isRootcellSubcommand(first)) {
+    return { instanceName, subcommand: first, rest: args.slice(index + 1) };
+  }
+  return { instanceName, subcommand: "", rest: args.slice(index) };
 }
 
 export function parseSpyOptions(args: readonly string[]): SpyOptions {

@@ -3,11 +3,11 @@
 The egress firewall for the agent VM. All outbound traffic from the agent
 VM passes through services running in the firewall VM:
 
-- **mitmproxy (transparent)** at `192.168.106.2:8081` — receives TCP/443
+- **mitmproxy (transparent)** at `<firewall-ip>:8081` — receives TCP/443
   packets that nftables NAT REDIRECT intercepts on the inter-VM link.
   Reads the TLS SNI from the ClientHello and matches against
   `allowed-https.txt`. On allow, **terminates TLS** using a
-  per-deployment CA (the matching cert is in the agent VM's trust
+  per-instance CA (the matching cert is in the agent VM's trust
   store) and opens a fresh TLS connection upstream — validating the
   upstream cert against the SNI/Host. The HTTP `Host` header is then
   required to equal the SNI and itself be in the allowlist, so a client
@@ -15,10 +15,10 @@ VM passes through services running in the firewall VM:
   deny, the upstream is redirected to `127.0.0.1:1` so the client TCP
   handshake gets RST and no mitmproxy-issued cert is ever presented
   (which would otherwise be the foothold for a `curl -k` bypass).
-- **mitmproxy (explicit / CONNECT)** at `192.168.106.2:8080` — handles
+- **mitmproxy (explicit / CONNECT)** at `<firewall-ip>:8080` — handles
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
   Matches against `allowed-ssh.txt`.
-- **dnsmasq** at `192.168.106.2:53` — DNS resolver that forwards names
+- **dnsmasq** at `<firewall-ip>:53` — DNS resolver that forwards names
   matching `allowed-dns.txt` to 1.1.1.1 and returns `REFUSED` for
   everything else.
 
@@ -34,26 +34,26 @@ only run one mode per process). HTTPS is transparent by design; SSH
 stays explicit (hostname allowlist) and is **not** MITM'd — TLS
 intercepting SSH would break key-based auth from inside the VM.
 
-The three allowlist files are gitignored; `./rootcell` seeds each from its
-`.defaults` sibling on first run. Edit the live `*.txt` to customize;
-delete the live file and re-run `./rootcell` to reset to project defaults.
+The three allowlist files are per-instance and gitignored under
+`.rootcell/instances/<name>/proxy/`; `./rootcell` seeds each from its
+`.defaults` sibling on first run. Edit the live `*.txt` to customize, delete it
+and re-run `./rootcell` to reset to project defaults.
 
 ## CA materials
 
-`./rootcell` generates a per-deployment CA the first time it runs and
-persists it under `pki/` on the host (gitignored). Three files:
+`./rootcell` generates a per-instance CA the first time it runs and persists it
+under `.rootcell/instances/<name>/pki/` on the host (gitignored). Three files:
 
-- `pki/agent-vm-ca.key` — RSA 2048 private key, mode 0600. Host only.
-- `pki/agent-vm-ca-cert.pem` — public cert. Shipped into the agent VM
+- `agent-vm-ca.key` — RSA 2048 private key, mode 0600. Host only.
+- `agent-vm-ca-cert.pem` — public cert. Shipped into the agent VM
   via `security.pki.certificateFiles` so the system trust store
   accepts mitmproxy-minted certs.
-- `pki/agent-vm-ca.pem` — key + cert concatenated. `./rootcell` pushes
+- `agent-vm-ca.pem` — key + cert concatenated. `./rootcell` pushes
   this into the firewall VM at `/etc/agent-vm/agent-vm-ca.pem` (mode
   0600 root:root); systemd `LoadCredential` surfaces it to the
   mitmproxy services.
 
-The CA is per-deployment (per-host, per-clone of this repo). Delete
-`pki/` and re-provision to rotate.
+Delete that instance's `pki/` and re-provision to rotate.
 
 ### What still gets through
 
@@ -87,9 +87,10 @@ exfil, but a few gaps remain:
 
 ## Adding a host
 
-Edit the relevant file and run `./rootcell allow` from the repo root. The
-files are copied into the firewall VM and dnsmasq is reloaded; mitmproxy
-picks up changes on its next event (no restart). End-to-end takes ~1s.
+Edit the relevant file under `.rootcell/instances/<name>/proxy/` and run
+`./rootcell --instance <name> allow` from the repo root. The files are copied
+into the firewall VM and dnsmasq is reloaded; mitmproxy picks up changes on its
+next event (no restart). End-to-end takes ~1s.
 
 If a host needs both DNS resolution and HTTPS access (the common case),
 add it to **both** `allowed-dns.txt` and `allowed-https.txt`. dnsmasq

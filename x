@@ -1,0 +1,11 @@
+.claude/worktrees/busy-yonath-5640db
+.claude/worktrees/competent-merkle-23db02
+.claude/worktrees/confident-jepsen-fdba01
+.claude/worktrees/cool-joliot-48259f
+.claude/worktrees/distracted-chatelet-b7d3d4
+.claude/worktrees/epic-mahavira-404974
+.claude/worktrees/funny-tu-9f9101
+.claude/worktrees/nifty-lewin-9eae63
+.claude/worktrees/nostalgic-babbage-e217c3
+.claude/worktrees/pedantic-mclean-bf157f
+.claude/worktrees/pensive-borg-37811c

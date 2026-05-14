@@ -17,16 +17,15 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: only the lima:host interface is configured. The repo's
-  # patched Lima launcher skips the default usernet NIC for this VM, so
-  # the private socket_vmnet link is enp0s1 and there is no direct host
-  # usernet path a root-capable agent could reconfigure into egress.
+  # Networking: only the per-instance socket_vmnet interface is configured.
+  # The repo's patched Lima launcher skips the default usernet NIC for this
+  # VM, so the private socket_vmnet link is enp0s1 and there is no direct
+  # host usernet path a root-capable agent could reconfigure into egress.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
-  # The lima:host link from nixos.yaml. The kernel names it via systemd's
-  # predictable scheme. With the default usernet NIC suppressed, this is
-  # enp0s1.
+  # The socket_vmnet link from nixos.yaml. The kernel names it via systemd's
+  # predictable scheme. With the default usernet NIC suppressed, this is enp0s1.
   systemd.network.networks."10-enp0s1" = {
     matchConfig.Name = "enp0s1";
     networkConfig = {

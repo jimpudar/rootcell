@@ -11,9 +11,8 @@ in
 #
 # Two NICs (kernel names from systemd predictable naming):
 #   enp0s1  vzNAT       — internet egress (default route)
-#   enp0s2  lima:host   — private link to the agent VM (default
-#                          192.168.106.0/24, overridable via .env;
-#                          IPs come from network.nix)
+#   enp0s2  socket_vmnet — private per-instance link to the agent VM
+#                           (IPs come from network.nix/network-local.nix)
 #
 # Hybrid filtering — HTTPS is intercepted, SSH is explicit, HTTP is denied:
 #
@@ -83,7 +82,7 @@ in
     networkConfig.DHCP = "ipv4";
   };
 
-  # enp0s2 = lima:host, our private link to the agent VM. (The kernel
+  # enp0s2 = socket_vmnet, our private link to the agent VM. (The kernel
   # names this NIC enp0s2 via systemd predictable naming because it's
   # the second virtio-net device — Lima's `interface:` field can't
   # actually rename the kernel device, so we just use enp0s2 directly.)
@@ -108,7 +107,7 @@ in
 
   # ── Firewall ──────────────────────────────────────────────────────────
   # NixOS firewall manages the filter table. We add a separate nat table
-  # below for the REDIRECT rules. Inbound on enp0s2 (the lima:host link
+  # below for the REDIRECT rules. Inbound on enp0s2 (the socket_vmnet link
   # to the agent VM) is allowed only on the explicit-mitmproxy port
   # (8080), the transparent-mitmproxy port (8081, which is the
   # post-REDIRECT destination), and dnsmasq (53).

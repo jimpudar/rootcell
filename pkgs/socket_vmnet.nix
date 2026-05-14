@@ -4,7 +4,7 @@
 # Not in nixpkgs as of writing. We package it ourselves so the binary is a
 # Nix-store artifact (root-owned, immutable, byte-for-byte reproducible);
 # the only piece outside Nix is the one-time `sudo install` of this binary
-# into /opt/socket_vmnet/bin so Lima's sudoers grant has a stable target.
+# into /opt/socket_vmnet/bin so rootcell's vmnet helper has a stable target.
 # The `rootcell` script's preflight builds via this derivation, compares to
 # /opt/socket_vmnet, and prints the install command if it's missing or
 # stale. See README → "One-time host setup".
@@ -31,8 +31,8 @@ stdenv.mkDerivation rec {
   # The upstream `install.bin` target uses `logger` (BSD syslog) for
   # status output, which also isn't in the sandbox. Side-step it and
   # copy the built binaries directly. We don't ship the launchd plists
-  # under share/doc — Lima invokes socket_vmnet via sudo at runtime, not
-  # as a system launchd daemon.
+  # under share/doc — rootcell invokes socket_vmnet through its own helper
+  # at runtime, not as a system launchd daemon.
   installPhase = ''
     runHook preInstall
     install -Dm 0755 -t $out/bin socket_vmnet socket_vmnet_client

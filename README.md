@@ -58,6 +58,11 @@ The two VMs have different jobs:
 | `firewall` VM | Owns the public egress path. It runs `dnsmasq` for DNS allowlisting and `mitmproxy` for HTTPS interception and SSH CONNECT policy. |
 | `./rootcell` | Host-side wrapper that creates, provisions, updates, and enters the VMs. It also syncs allowlists and injects configured provider secrets for each session. |
 
+Rootcell supports named instances. Plain `./rootcell` uses the `default`
+instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
+dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
+allowlists, Keychain mappings, and a separate vmnet network.
+
 HTTPS egress is transparent from inside the agent VM. A normal command like
 `curl https://github.com` either works because the host is allowlisted, or fails
 because the firewall denies it. SSH is explicit because SSH has no SNI; the
@@ -95,12 +100,17 @@ curl -fsSL https://bun.sh/install | bash
 # Build the Lima vmnet helper packaged by this flake.
 nix build .#socket_vmnet
 
-# Install it at the root-owned path Lima expects.
+# Install it at the root-owned path rootcell's helper expects.
 sudo install -m 0755 -d /opt/socket_vmnet/bin
 sudo install -m 0755 result/bin/* /opt/socket_vmnet/bin/
 
-# Let Lima use that helper without asking for sudo on every VM start.
-limactl sudoers | sudo tee /private/etc/sudoers.d/lima
+# Install rootcell's stable vmnet helper and sudoers rule.
+sudo install -m 0755 -d /opt/rootcell/bin
+sudo install -m 0755 src/bin/rootcell-vmnet-helper.sh /opt/rootcell/bin/rootcell-vmnet
+sudo chown root:wheel /opt/rootcell/bin/rootcell-vmnet
+printf '%s\n' '%staff ALL=(root:wheel) NOPASSWD:NOSETENV: /opt/rootcell/bin/rootcell-vmnet *' \
+  | sudo tee /private/etc/sudoers.d/rootcell-vmnet >/dev/null
+sudo chmod 0440 /private/etc/sudoers.d/rootcell-vmnet
 
 # Store the default Bedrock provider key in Keychain.
 security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
@@ -109,10 +119,11 @@ security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 ./rootcell
 ```
 
-Why the one sudo install? Lima's `lima:host` network uses macOS
-`vmnet.framework`, which requires the privileged `socket_vmnet` helper at a
-root-owned path. The helper binary itself is built from this repo's flake; the
-imperative part is only copying it into `/opt/socket_vmnet/bin`.
+Why the sudo install? macOS `vmnet.framework` requires `socket_vmnet` to run as
+root. Rootcell installs one root-owned helper with a stable sudoers rule; the
+helper starts one unmanaged socket_vmnet daemon per instance. New instances do
+not require editing `~/.lima/_config/networks.yaml` or regenerating Lima
+sudoers.
 
 First run usually takes about 15 minutes because both VMs are created and
 rebuilt. Later runs normally take seconds.
@@ -129,32 +140,37 @@ rebuilt. Later runs normally take seconds.
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
 ./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
+
+./rootcell --instance dev         # open the dev instance shell
+./rootcell --instance dev allow   # reload only the dev instance allowlists
 ```
 
 ## Allowing Network Access
 
-Network policy lives in `proxy/`. On first run, `./rootcell` copies each tracked
-`.defaults` file to a gitignored live file:
+Network policy is per instance. On first run, `./rootcell` copies each tracked
+`proxy/*.defaults` file to `.rootcell/instances/<name>/proxy/`:
 
-- `proxy/allowed-dns.txt` controls which hostnames can resolve.
-- `proxy/allowed-https.txt` controls which HTTPS hosts can be reached.
-- `proxy/allowed-ssh.txt` controls which SSH hosts can be reached.
+- `.rootcell/instances/default/proxy/allowed-dns.txt` controls which hostnames can resolve.
+- `.rootcell/instances/default/proxy/allowed-https.txt` controls which HTTPS hosts can be reached.
+- `.rootcell/instances/default/proxy/allowed-ssh.txt` controls which SSH hosts can be reached.
 
 For most HTTPS access, add the host to both DNS and HTTPS, then reload:
 
 ```bash
-$EDITOR proxy/allowed-dns.txt
-$EDITOR proxy/allowed-https.txt
+$EDITOR .rootcell/instances/default/proxy/allowed-dns.txt
+$EDITOR .rootcell/instances/default/proxy/allowed-https.txt
 ./rootcell allow
 ```
 
-For Git over SSH, add the host to `proxy/allowed-ssh.txt` and run
+For Git over SSH, add the host to the instance's `allowed-ssh.txt` and run
 `./rootcell allow`. GitHub, GitLab, Bitbucket, and Azure DevOps are included in the
 default SSH allowlist.
 
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
-`./rootcell`; it will be re-seeded from its `.defaults` sibling.
+`./rootcell`; it will be re-seeded from its `.defaults` sibling. For a named
+instance, use the same paths under `.rootcell/instances/<name>/proxy/` and run
+`./rootcell --instance <name> allow`.
 
 ## Common Changes
 
@@ -201,7 +217,7 @@ GitLab, Bitbucket, Azure DevOps, or a deploy key.
 ```
 
 After registering the key, `git push` works from inside the agent VM as long as
-the host is on `proxy/allowed-ssh.txt`.
+the host is on that instance's `allowed-ssh.txt`.
 
 ## Security Model
 
@@ -255,8 +271,9 @@ home.nix                 pi, Git, SSH, and developer tools for the agent VM
 nixos.yaml               Lima config for the agent VM
 firewall.yaml            Lima config for the firewall VM
 network.nix              default inter-VM network settings
-.env.defaults            seed values for local `.env`
-secrets.env.defaults     seed Keychain secret mappings for local `secrets.env`
+.env.defaults            seed values for per-instance `.env`
+secrets.env.defaults     seed Keychain secret mappings for per-instance `secrets.env`
+.rootcell/               gitignored per-instance state, allowlists, CA, and generated files
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
@@ -273,6 +290,9 @@ Stop the VMs but keep their disks and Nix store caches:
 limactl stop agent
 limactl stop firewall
 ./rootcell
+
+limactl stop agent-dev firewall-dev
+./rootcell --instance dev
 ```
 
 Delete the VMs for a clean slate:
@@ -280,6 +300,9 @@ Delete the VMs for a clean slate:
 ```bash
 limactl delete agent firewall --force
 ./rootcell
+
+limactl delete agent-dev firewall-dev --force
+./rootcell --instance dev
 ```
 
 If you edit `nixos.yaml` or `firewall.yaml`, Lima will not apply those changes
@@ -290,20 +313,34 @@ recreate the VM.
 
 ### Environment
 
-`./rootcell` seeds `.env` from `.env.defaults` on first run. Edit `.env` for local
-settings such as:
+`./rootcell` seeds `.rootcell/instances/<name>/.env` from `.env.defaults` on
+first run. Edit that file for instance-local settings such as:
 
 ```sh
 AWS_REGION=us-west-2
-LIMA_NETWORK=host
-FIREWALL_IP=192.168.106.2
-AGENT_IP=192.168.106.3
+ROOTCELL_SUBNET_POOL_START=192.168.100.0
+ROOTCELL_SUBNET_POOL_END=192.168.254.0
+```
+
+The first run also writes `.rootcell/instances/<name>/state.json` with the
+instance's vmnet UUID and allocated `/24`. By default, rootcell chooses the first
+free subnet from `192.168.100.0/24` through `192.168.254.0/24`, uses `.2` for
+the firewall, and uses `.3` for the agent. Existing state is not recalculated if
+you later edit the pool values.
+
+To pin a new instance to a specific subnet before first run, set both IPs in
+that instance's `.env`:
+
+```sh
+FIREWALL_IP=192.168.109.2
+AGENT_IP=192.168.109.3
 NETWORK_PREFIX=24
 ```
 
-`./rootcell` also seeds `secrets.env` from `secrets.env.defaults` on first run.
-This file maps agent VM environment variable names to macOS Keychain service
-names; it does not contain the secret values themselves:
+`./rootcell` also seeds `.rootcell/instances/<name>/secrets.env` from
+`secrets.env.defaults` on first run. This file maps agent VM environment
+variable names to macOS Keychain service names; it does not contain the secret
+values themselves:
 
 ```sh
 AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key
@@ -313,7 +350,7 @@ For example, to inject an additional `ANTHROPIC_API_KEY`:
 
 ```sh
 security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
-echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> secrets.env
+echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> .rootcell/instances/default/secrets.env
 ```
 
 If you want to use Anthropic or OpenAI subscriptions, you can log in from
@@ -347,51 +384,32 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 - The pi release tarball URL and hash in `home.nix`
 - The image URL, `arch`, and digest in both Lima YAML files
 
-### Multiple macOS User Accounts
+### Multiple Instances
 
-The default Lima `host` network is backed by a system-wide macOS vmnet bridge.
-If two macOS users run rootcell with the same default subnet, the VMs can
-collide.
-
-For the second account, create a separate Lima host-mode network in
-`~/.lima/_config/networks.yaml`:
-
-```yaml
-networks:
-  host2:
-    mode: host
-    gateway: 192.168.107.1
-    dhcpEnd: 192.168.107.254
-    netmask: 255.255.255.0
-```
-
-Mirror that network entry in the first account too, then refresh the system-wide
-sudoers file once:
+Named instances are isolated from each other:
 
 ```bash
-limactl sudoers | sudo tee /private/etc/sudoers.d/lima
+./rootcell --instance dev
+./rootcell --instance review
 ```
 
-In the second account's `.env`, choose VM IPs inside that subnet. Do not use the
-`.1` gateway address; macOS owns it for the bridge.
+Each instance gets its own VMs, state directory, CA, allowlists, Keychain mapping
+file, vmnet UUID, Unix socket, and `/24`. Rootcell starts socket_vmnet directly
+through `/opt/rootcell/bin/rootcell-vmnet`, so adding an instance does not touch
+`~/.lima/_config/networks.yaml`.
 
-```sh
-LIMA_NETWORK=host2
-FIREWALL_IP=192.168.107.2
-AGENT_IP=192.168.107.3
-NETWORK_PREFIX=24
-```
+The `default` instance migrates from legacy repo-local files on first run: if
+`.env`, `secrets.env`, `proxy/allowed-*.txt`, or `pki/` already exist, rootcell
+copies them into `.rootcell/instances/default/`. Named instances seed from the
+checked-in defaults.
 
-Then recreate that account's VMs:
+Existing VMs created with the old managed `lima: host` network must be recreated
+because Lima network attachments are creation-time configuration:
 
 ```bash
 limactl delete agent firewall --force
 ./rootcell
 ```
-
-If the VMs look correctly configured but cannot reach each other, stop them and
-remove the stale `socket_vmnet` daemon files for that network before starting
-again.
 
 ## Troubleshooting
 

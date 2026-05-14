@@ -1,31 +1,5 @@
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { SecretMapping } from "./types.ts";
-
-export function seedFileIfMissing(path: string, defaultsPath: string): boolean {
-  if (!existsSync(path) && existsSync(defaultsPath)) {
-    copyFileSync(defaultsPath, path);
-    return true;
-  }
-  return false;
-}
-
-export function seedRootcellLocalFiles(repoDir: string, log: (message: string) => void): void {
-  if (seedFileIfMissing(join(repoDir, ".env"), join(repoDir, ".env.defaults"))) {
-    log("seeded .env from .env.defaults");
-  }
-  if (seedFileIfMissing(join(repoDir, "secrets.env"), join(repoDir, "secrets.env.defaults"))) {
-    log("seeded secrets.env from secrets.env.defaults");
-  }
-
-  for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
-    const live = join(repoDir, "proxy", file);
-    const defaults = `${live}.defaults`;
-    if (seedFileIfMissing(live, defaults)) {
-      log(`seeded proxy/${file} from ${file}.defaults`);
-    }
-  }
-}
 
 export function loadDotEnv(path: string, env: NodeJS.ProcessEnv): void {
   if (!existsSync(path)) {

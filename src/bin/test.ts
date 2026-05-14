@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { runCapture, runInherited } from "../rootcell/process.ts";
 
 const REPO_DIR = findRepoDir(import.meta.path);
+const TEST_INSTANCE = "test";
 const AGENT_VM_NAME = "agent-test";
 const FIREWALL_VM_NAME = "firewall-test";
-const FIREWALL_IP = "192.168.106.10";
-const AGENT_IP = "192.168.106.11";
+const FIREWALL_IP = "192.168.109.2";
+const AGENT_IP = "192.168.109.3";
 
 interface TestCase {
   readonly name: string;
@@ -128,7 +129,7 @@ function syncDefaultAllowlists(): void {
 
 function agentRestartsViaWrapper(): void {
   limactl(["stop", AGENT_VM_NAME]);
-  commandOk(join(REPO_DIR, "rootcell"), ["provision"]);
+  commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "provision"]);
   syncDefaultAllowlists();
   limactl(["shell", AGENT_VM_NAME, "--", "true"]);
 }
@@ -219,8 +220,8 @@ function buildCases(): TestCase[] {
     { name: "agent Lima user has lingering enabled", run: () => agentSh('loginctl show-user "$USER" -p Linger | grep -q Linger=yes') },
     { name: "agent restarts via ./rootcell after locked-down networking", run: agentRestartsViaWrapper },
     { name: "firewall services active", run: () => firewallSh("systemctl is-active mitmproxy-explicit mitmproxy-transparent dnsmasq >/dev/null") },
-    { name: "agent spy --help is wired", run: () => commandOk("bash", ["-c", `'${join(REPO_DIR, "rootcell")}' spy --help | grep -q -- '--tui'`]) },
-    { name: "agent spy tui flags parse with help", run: () => commandOk("bash", ["-c", `'${join(REPO_DIR, "rootcell")}' spy --tui --raw --no-dedupe --help | grep -q -- '--tui'`]) },
+    { name: "agent spy --help is wired", run: () => commandOk("bash", ["-c", `'${join(REPO_DIR, "rootcell")}' --instance ${TEST_INSTANCE} spy --help | grep -q -- '--tui'`]) },
+    { name: "agent spy tui flags parse with help", run: () => commandOk("bash", ["-c", `'${join(REPO_DIR, "rootcell")}' --instance ${TEST_INSTANCE} spy --tui --raw --no-dedupe --help | grep -q -- '--tui'`]) },
     { name: "firewall spy formatter installed", run: () => firewallSh('test -x /etc/agent-vm/agent_spy.py && test -x /etc/agent-vm/agent_spy_tui.py && command -v python3 >/dev/null && python3 -c "import textual" && test -d /run/agent-vm-spy') },
     { name: "agent VM has test IP on enp0s1", run: () => agentSh(`ip -4 -o addr show enp0s1 | grep -q '${AGENT_IP}/'`) },
     { name: "agent VM has no default Lima usernet NIC", run: () => agentSh("! ip link show enp0s2 >/dev/null 2>&1") },
@@ -261,31 +262,18 @@ function runCase(testCase: TestCase): boolean {
   }
 }
 
-function preflightEnvCollision(): void {
-  const envPath = join(REPO_DIR, ".env");
-  if (!existsSync(envPath)) {
-    return;
-  }
-  const envText = readFileSync(envPath, "utf8");
-  if (new RegExp(`^(FIREWALL_IP=${escapeRegExp(FIREWALL_IP)}|AGENT_IP=${escapeRegExp(AGENT_IP)})$`, "m").test(envText)) {
-    log(`your .env already uses the test IPs (${FIREWALL_IP} / ${AGENT_IP}).`);
-    log("edit .env to use different prod IPs, or run --teardown.");
-    process.exit(1);
-  }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function removeTestInstanceState(): void {
+  rmSync(join(REPO_DIR, ".rootcell", "instances", TEST_INSTANCE), {
+    recursive: true,
+    force: true,
+  });
 }
 
 function main(args: readonly string[]): number {
   const parsed = parseArgs(args);
-  process.env.AGENT_VM_NAME = AGENT_VM_NAME;
-  process.env.FIREWALL_VM_NAME = FIREWALL_VM_NAME;
   process.env.FIREWALL_IP = FIREWALL_IP;
   process.env.AGENT_IP = AGENT_IP;
-
-  preflightEnvCollision();
+  process.env.NETWORK_PREFIX = "24";
 
   if (parsed.teardown) {
     log("deleting test VMs...");
@@ -293,6 +281,7 @@ function main(args: readonly string[]): number {
       allowFailure: true,
       ignoredOutput: true,
     });
+    removeTestInstanceState();
     return 0;
   }
   if (parsed.clean) {
@@ -301,10 +290,11 @@ function main(args: readonly string[]): number {
       allowFailure: true,
       ignoredOutput: true,
     });
+    removeTestInstanceState();
   }
 
   log("provisioning test VMs (first run takes ~15 min)...");
-  commandOk(join(REPO_DIR, "rootcell"), ["provision"]);
+  commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "provision"]);
   syncDefaultAllowlists();
   log("running tests...");
 

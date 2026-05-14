@@ -8,6 +8,17 @@ import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import { limaListJsonContainsSocket, limaStatusFromOutput } from "./providers/lima.ts";
 import { MacOsSocketVmnetNetworkProvider } from "./providers/macos-socket-vmnet.ts";
+import { MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
+import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
+import {
+  builderVfkitArgs,
+  imageDownloadUrl,
+  parseRootcellImageManifest,
+  imageForRole,
+  ROOTCELL_GUEST_API_VERSION,
+  ROOTCELL_IMAGE_SCHEMA_VERSION,
+} from "./images.ts";
+import { sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -84,6 +95,16 @@ describe("rootcell argument parsing", () => {
     });
   });
 
+  test("parses image build command", () => {
+    expect(runArgs(["images", "build"])).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "images",
+      rest: ["build"],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+  });
+
   test("rejects unknown spy flags", () => {
     expect(() => parseRootcellArgs(["spy", "--bogus"])).toThrow("Unknown argument: bogus");
   });
@@ -139,14 +160,31 @@ describe("environment parsing", () => {
     expect(config.agentIp).toBe("192.168.109.3");
     expect(config.vmnetSocketPath).toBe("/private/var/run/rootcell/501/dev.sock");
     expect(config.vmStartTimeout).toBe("5s");
+    expect(config.imageManifestUrl).toBe("https://github.com/jimpudar/rootcell-images/releases/latest/download/manifest.json");
   });
 });
 
 describe("VM and network providers", () => {
-  test("factory wires the current Lima and macOS vmnet providers", () => {
+  test("factory defaults to vfkit providers", () => {
     const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
-    expect(providers.network.id).toBe("macos-socket-vmnet");
-    expect(providers.vm.id).toBe("lima");
+    expect(providers.network.id).toBe("macos-vfkit");
+    expect(providers.vm.id).toBe("vfkit");
+  });
+
+  test("factory keeps Lima providers behind rollback env var", () => {
+    const old = process.env.ROOTCELL_VM_PROVIDER;
+    process.env.ROOTCELL_VM_PROVIDER = "lima";
+    try {
+      const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
+      expect(providers.network.id).toBe("macos-socket-vmnet");
+      expect(providers.vm.id).toBe("lima");
+    } finally {
+      if (old === undefined) {
+        delete process.env.ROOTCELL_VM_PROVIDER;
+      } else {
+        process.env.ROOTCELL_VM_PROVIDER = old;
+      }
+    }
   });
 
   test("macOS socket vmnet provider exposes guest config and Lima attachments", () => {
@@ -181,6 +219,108 @@ describe("VM and network providers", () => {
     });
   });
 
+  test("macOS vfkit provider exposes host-control and hostless-private attachments", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
+    expect(plan.provider).toBe("macos-vfkit");
+    expect(plan.guest).toEqual({
+      firewallIp: "192.168.109.2",
+      agentIp: "192.168.109.3",
+      networkPrefix: 24,
+      agentPrivateInterface: "enp0s1",
+      firewallPrivateInterface: "enp0s2",
+      firewallEgressInterface: "enp0s1",
+      firewallControlInterface: "enp0s1",
+    });
+    expect(plan.vms.agent.kind).toBe("vfkit");
+    expect(plan.vms.agent.useNat).toBe(false);
+    expect(plan.vms.firewall.useNat).toBe(true);
+    expect(plan.vms.firewall.controlMac).toMatch(/^52:54:00:/);
+    expect(plan.vms.agent.privateSocketPath).toContain("/repo/.rootcell/instances/dev/vfkit/network/agent-private.sock");
+    expect(plan.vms.firewall.privateSocketPath).toContain("/repo/.rootcell/instances/dev/vfkit/network/firewall-private.sock");
+  });
+
+  test("vfkit args include EFI, cloud-init, expected NICs, and no VSOCK", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const network = new MacOsVfkitNetworkProvider(config, ignoreLog).plan().vms.firewall;
+    const args = vfkitArgs({
+      role: "firewall",
+      diskPath: "/vm/firewall/disk.raw",
+      efiVariableStorePath: "/vm/firewall/efi",
+      restSocketPath: "/vm/firewall/rest.sock",
+      logPath: "/vm/firewall/serial.log",
+      cloudInitDir: "/vm/firewall/cloud-init",
+      network,
+    });
+    expect(args).toContain("efi,variable-store=/vm/firewall/efi,create");
+    expect(args).toContain(`virtio-net,nat,mac=${network.controlMac ?? ""}`);
+    expect(args).toContain("virtio-net,unixSocketPath=" + network.privateSocketPath + ",mac=" + network.privateMac);
+    expect(args.join(" ")).toContain("--cloud-init /vm/firewall/cloud-init/user-data,/vm/firewall/cloud-init/meta-data");
+    expect(args.join(" ")).not.toContain("vsock");
+  });
+
+  test("vfkit cloud-init configures role private addresses before SSH", () => {
+    const agent = vfkitCloudInitUserData({
+      role: "agent",
+      user: "luser",
+      publicKey: "ssh-ed25519 test",
+      instanceName: "dev",
+      firewallIp: "192.168.109.2",
+      agentIp: "192.168.109.3",
+      networkPrefix: "24",
+      privateMac: "52:54:00:4e:1d:de",
+    });
+    expect(agent).toContain("for path in /sys/class/net/*");
+    expect(agent).toContain("MACAddress=52:54:00:4e:1d:de");
+    expect(agent).toContain("addr='192.168.109.3/24'");
+    expect(agent).toContain("ip route replace default via \"$gateway\"");
+    expect(agent).toContain("printf 'nameserver %s\\n' \"$gateway\" > /etc/resolv.conf");
+
+    const firewall = vfkitCloudInitUserData({
+      role: "firewall",
+      user: "luser",
+      publicKey: "ssh-ed25519 test",
+      instanceName: "dev",
+      firewallIp: "192.168.109.2",
+      agentIp: "192.168.109.3",
+      networkPrefix: "24",
+      privateMac: "52:54:00:c4:80:73",
+    });
+    expect(firewall).toContain("MACAddress=52:54:00:c4:80:73");
+    expect(firewall).toContain("addr='192.168.109.2/24'");
+  });
+
+  test("vfkit image builder args use NAT and no VSOCK", () => {
+    const args = builderVfkitArgs({
+      diskPath: "/vm/builder/disk.raw",
+      efiVariableStorePath: "/vm/builder/efi",
+      restSocketPath: "/vm/builder/rest.sock",
+      logPath: "/vm/builder/serial.log",
+      cloudInitDir: "/vm/builder/cloud-init",
+      controlMac: "52:54:00:aa:bb:cc",
+    });
+    expect(args).toContain("efi,variable-store=/vm/builder/efi,create");
+    expect(args).toContain("unix:///vm/builder/rest.sock");
+    expect(args).toContain("virtio-net,nat,mac=52:54:00:aa:bb:cc");
+    expect(args.join(" ")).not.toContain("unixSocketPath");
+    expect(args.join(" ")).not.toContain("vsock");
+  });
+
+  test("proxyjump ssh config uses direct firewall and jumped agent aliases", () => {
+    const configText = sshConfig({
+      user: "luser",
+      firewallHost: "192.168.64.10",
+      agentHost: "192.168.109.3",
+      identityPath: "/instance/ssh/rootcell_control_ed25519",
+      knownHostsPath: "/instance/ssh/known_hosts",
+    });
+    expect(configText).toContain("Host rootcell-firewall");
+    expect(configText).toContain("HostName 192.168.64.10");
+    expect(configText).toContain("Host rootcell-agent");
+    expect(configText).toContain("ProxyJump rootcell-firewall");
+    expect(configText).toContain("IdentityFile /instance/ssh/rootcell_control_ed25519");
+  });
+
   test("Lima status output maps to provider-neutral VM states", () => {
     expect(limaStatusFromOutput("")).toEqual({ state: "missing" });
     expect(limaStatusFromOutput("Running\n")).toEqual({ state: "running" });
@@ -203,6 +343,82 @@ describe("VM and network providers", () => {
     expect(limaListJsonContainsSocket(output, socketPath)).toBe(true);
     expect(limaListJsonContainsSocket(output, "/private/var/run/rootcell/501/other.sock")).toBe(false);
     expect(limaListJsonContainsSocket(`{"socket":${JSON.stringify(socketPath)}`, socketPath)).toBe(true);
+  });
+
+  test("vfkit state parser validates running state shape", () => {
+    expect(parseVfkitVmState({
+      provider: "vfkit",
+      name: "firewall-dev",
+      role: "firewall",
+      pid: 123,
+      diskPath: "/vm/disk.raw",
+      efiVariableStorePath: "/vm/efi",
+      restSocketPath: "/vm/rest.sock",
+      logPath: "/vm/serial.log",
+      privateMac: "52:54:00:00:00:01",
+      controlMac: "52:54:00:00:00:02",
+      firewallControlIp: "192.168.64.2",
+    }).firewallControlIp).toBe("192.168.64.2");
+    expect(() => parseVfkitVmState({ provider: "lima" })).toThrow("provider mismatch");
+  });
+
+  test("macOS DHCP lease parser finds vfkit NAT IP by MAC", () => {
+    const repo = makeInstanceRepo();
+    const leases = join(repo, "leases");
+    try {
+      writeFileSync(leases, [
+        "name=firewall-vm",
+        "ip_address=192.168.64.8",
+        "hw_address=ff,not-the-mac",
+        "lease=0x1",
+        "",
+        "name=firewall",
+        "ip_address=192.168.64.9",
+        "hw_address=1,52:54:00:aa:bb:cc",
+        "",
+        "name=firewall-vm",
+        "ip_address=192.168.64.10",
+        "hw_address=ff,still-not-the-mac",
+        "lease=0x2",
+        "",
+      ].join("\n"), "utf8");
+      expect(lookupDhcpLease("52:54:00:aa:bb:cc", leases)).toBe("192.168.64.9");
+      expect(lookupDhcpLease("52:54:00:00:00:00", leases, "firewall-vm")).toBe("192.168.64.10");
+      expect(lookupDhcpLease("52:54:00:00:00:00", leases)).toBeNull();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rootcell image manifest contract", () => {
+  test("parses compatible manifest and selects role images", () => {
+    const manifest = parseRootcellImageManifest(fakeManifest());
+    expect(manifest.schemaVersion).toBe(ROOTCELL_IMAGE_SCHEMA_VERSION);
+    expect(manifest.guestApiVersion).toBe(ROOTCELL_GUEST_API_VERSION);
+    expect(imageForRole(manifest, "agent").fileName).toBe("agent.raw.zst");
+  });
+
+  test("resolves relative image asset URLs against the manifest URL", () => {
+    expect(imageDownloadUrl(
+      "agent.raw.zst",
+      "https://github.com/jimpudar/rootcell-images/releases/download/guest-v1/manifest.json",
+    )).toBe("https://github.com/jimpudar/rootcell-images/releases/download/guest-v1/agent.raw.zst");
+    expect(imageDownloadUrl(
+      "https://downloads.example/rootcell/agent.raw.zst",
+      "https://github.com/jimpudar/rootcell-images/releases/download/guest-v1/manifest.json",
+    )).toBe("https://downloads.example/rootcell/agent.raw.zst");
+  });
+
+  test("rejects incompatible guest API and CLI contract", () => {
+    expect(() => parseRootcellImageManifest({ ...fakeManifest(), guestApiVersion: 99 })).toThrow("guestApiVersion");
+    const missingContract = fakeManifest();
+    delete missingContract.rootcellCliContract;
+    expect(() => parseRootcellImageManifest(missingContract)).toThrow("rootcellCliContract");
+    expect(() => parseRootcellImageManifest({
+      ...fakeManifest(),
+      rootcellCliContract: { min: 2, max: 2 },
+    })).toThrow("CLI image contract");
   });
 });
 
@@ -369,4 +585,29 @@ function stateJson(name: string, prefix: string): string {
     socketPath: `/private/var/run/rootcell/501/${name}.sock`,
     pidPath: `/private/var/run/rootcell/501/${name}.pid`,
   }, null, 2)}\n`;
+}
+
+function fakeManifest(): Record<string, unknown> {
+  const image = {
+    role: "agent",
+    architecture: "aarch64-linux",
+    fileName: "agent.raw.zst",
+    url: "https://example.invalid/agent.raw.zst",
+    compression: "zstd",
+    compressedSize: 100,
+    rawSize: 1000,
+    sha256: "0".repeat(64),
+  };
+  return {
+    schemaVersion: ROOTCELL_IMAGE_SCHEMA_VERSION,
+    guestApiVersion: ROOTCELL_GUEST_API_VERSION,
+    rootcellSourceRevision: "abc123",
+    nixpkgsRevision: "def456",
+    rootcellCliContract: { min: 1, max: 1 },
+    images: [
+      image,
+      { ...image, role: "firewall", fileName: "firewall.raw.zst", url: "https://example.invalid/firewall.raw.zst" },
+      { ...image, role: "builder", fileName: "builder.raw.zst", url: "https://example.invalid/builder.raw.zst" },
+    ],
+  };
 }

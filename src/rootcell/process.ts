@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { SpawnOptions, SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import type { CommandResult, InheritedCommandResult } from "./types.ts";
 
 export interface RunOptions {
@@ -77,6 +78,25 @@ export function runInputInherited(command: string, args: readonly string[], stdi
     throw new CommandError(command, args, { status, stdout: "", stderr: "" });
   }
   return { status };
+}
+
+export function runStdoutToFile(command: string, args: readonly string[], path: string, options: InheritOptions = {}): InheritedCommandResult {
+  const fd = openSync(path, "w", 0o600);
+  try {
+    const result = spawnSync(command, [...args], {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: ["ignore", fd, options.ignoredOutput ? "ignore" : "inherit"],
+      encoding: "utf8",
+    });
+    const status = result.status ?? statusFromSignal(result.signal);
+    if (!options.allowFailure && status !== 0) {
+      throw new CommandError(command, args, { status, stdout: "", stderr: "" });
+    }
+    return { status };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export async function runAsyncInherited(

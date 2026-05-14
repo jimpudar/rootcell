@@ -114,6 +114,9 @@ in
   networking.nftables.enable = true;
   networking.firewall = {
     enable = true;
+    interfaces.enp0s1 = {
+      allowedTCPPorts = [ 22 ];
+    };
     interfaces.enp0s2 = {
       allowedTCPPorts = [ 8080 8081 ];
       allowedUDPPorts = [ 53 ];

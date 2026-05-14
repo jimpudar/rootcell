@@ -11,7 +11,6 @@ import { MacOsSocketVmnetNetworkProvider } from "./providers/macos-socket-vmnet.
 import { MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
 import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
 import {
-  builderVfkitArgs,
   imageDownloadUrl,
   parseRootcellImageManifest,
   imageForRole,
@@ -92,16 +91,6 @@ describe("rootcell argument parsing", () => {
       subcommand: "spy",
       rest: [],
       spyOptions: { raw: true, dedupe: false, tui: true },
-    });
-  });
-
-  test("parses image build command", () => {
-    expect(runArgs(["images", "build"])).toEqual({
-      kind: "run",
-      instanceName: "default",
-      subcommand: "images",
-      rest: ["build"],
-      spyOptions: { raw: false, dedupe: true, tui: false },
     });
   });
 
@@ -288,22 +277,6 @@ describe("VM and network providers", () => {
     });
     expect(firewall).toContain("MACAddress=52:54:00:c4:80:73");
     expect(firewall).toContain("addr='192.168.109.2/24'");
-  });
-
-  test("vfkit image builder args use NAT and no VSOCK", () => {
-    const args = builderVfkitArgs({
-      diskPath: "/vm/builder/disk.raw",
-      efiVariableStorePath: "/vm/builder/efi",
-      restSocketPath: "/vm/builder/rest.sock",
-      logPath: "/vm/builder/serial.log",
-      cloudInitDir: "/vm/builder/cloud-init",
-      controlMac: "52:54:00:aa:bb:cc",
-    });
-    expect(args).toContain("efi,variable-store=/vm/builder/efi,create");
-    expect(args).toContain("unix:///vm/builder/rest.sock");
-    expect(args).toContain("virtio-net,nat,mac=52:54:00:aa:bb:cc");
-    expect(args.join(" ")).not.toContain("unixSocketPath");
-    expect(args.join(" ")).not.toContain("vsock");
   });
 
   test("proxyjump ssh config uses direct firewall and jumped agent aliases", () => {

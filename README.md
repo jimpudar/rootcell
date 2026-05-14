@@ -138,19 +138,9 @@ ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-images
 ```
 
 `ROOTCELL_IMAGE_DIR` must contain `manifest.json` plus the image files named in
-that manifest. For local development of image artifacts:
-
-```bash
-./rootcell images build
-```
-
-That command builds the same `packages.aarch64-linux.rootcellImages` artifact
-that the separate `rootcell-images` release repository publishes. It first
-tries a direct host `nix build`; on macOS without an `aarch64-linux` builder it
-downloads or reuses the published `builder` image, boots it with vfkit, and
-runs the host build with an ephemeral `ssh-ng://` Nix remote builder. The result
-link is written to `.rootcell/images/dist`. The builder VM is local tooling only
-and is not part of the rootcell agent/firewall security boundary.
+that manifest. Image artifacts are built and published from the separate
+[`rootcell-images`](https://github.com/rootcell-ai/rootcell-images) repository;
+this repository only consumes those release assets at VM creation time.
 
 ## Daily Workflow
 
@@ -287,12 +277,10 @@ the same explicit network policy model across supported hosts.
 ```text
 rootcell                 host entry point for VM lifecycle and commands
 src/                     Bun TypeScript implementation for migrated entrypoints
-flake.nix                Nix inputs, VM outputs, and host packages
+flake.nix                Nix inputs, guest VM configs, and host packages
 common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
 firewall-vm.nix          firewall VM services and nftables rules
-vfkit-image.nix          raw EFI image settings for rootcell-images builds
-builder-vm.nix           local image-builder VM config
 home.nix                 pi, Git, SSH, and developer tools for the agent VM
 nixos.yaml               Lima config for the agent VM
 firewall.yaml            Lima config for the firewall VM
@@ -421,7 +409,7 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 
 - `system` in `flake.nix`
 - The pi release tarball URL and hash in `home.nix`
-- The rootcell image manifest and role image artifacts
+- The pinned rootcell source and image artifacts in `rootcell-images`
 
 ### Multiple Instances
 

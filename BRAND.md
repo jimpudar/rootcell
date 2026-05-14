@@ -35,7 +35,7 @@ It should sound:
 
 - Let the agent use a real shell without giving it your Mac.
 - Make network access visible, reviewable, and reloadable.
-- Keep the setup reproducible with Nix and Lima.
+- Keep the setup reproducible with Nix and local VMs.
 - Treat the firewall as a practical boundary, not a magic sandbox.
 
 ## Vocabulary

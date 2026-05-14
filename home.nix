@@ -182,11 +182,9 @@ in
 
   # All SSH egress tunnels through the firewall VM via HTTP CONNECT, where
   # mitmproxy applies the allowed-ssh.txt allowlist. No exceptions —
-  # `ssh host.lima.internal` falls through this rule too and gets denied
-  # by the firewall (host.lima.internal isn't on the SSH allowlist), so
-  # the VM has no path to SSH back to the host. (limactl shell / cp use
-  # Lima's own host→guest vsock transport on the *server* side, which
-  # this client config doesn't touch.)
+  # attempts to SSH back to the host fall through this rule too and get denied
+  # unless explicitly allowlisted. Rootcell's host→guest management SSH is a
+  # separate inbound path and this client config does not touch it.
   programs.ssh = {
     enable = true;
     # Don't pull in home-manager's default ProxyCommand/ServerAlive/etc;

@@ -22,10 +22,6 @@ interface SpyArgs extends GlobalArgs {
   readonly tui?: boolean;
 }
 
-interface ImagesArgs extends GlobalArgs {
-  readonly action?: string;
-}
-
 type ParserArgv<T> = Argv<T>;
 
 function subcommandDescription(name: RootcellSubcommand): string {
@@ -95,7 +91,7 @@ function completion(
   });
 }
 
-function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & ImagesArgs> {
+function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
   return yargs([...args])
     .scriptName("rootcell")
     .exitProcess(false)
@@ -123,15 +119,6 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs & Image
     .command(...rootcellSubcommand("provision"))
     .command(...rootcellSubcommand("allow"))
     .command(...rootcellSubcommand("pubkey"))
-    .command(
-      "images <action>",
-      subcommandDescription("images"),
-      (argv: ParserArgv<ImagesArgs>) => argv.positional("action", {
-        choices: ["build"] as const,
-        describe: "image action",
-        type: "string",
-      }).demandCommand(0, 0).strictOptions(),
-    )
     .command(
       "spy",
       subcommandDescription("spy"),
@@ -192,7 +179,7 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
       kind: "run",
       instanceName: instanceName(argv),
       subcommand,
-      rest: subcommand === "images" ? stringArray(argv.action) : [],
+      rest: [],
       spyOptions: subcommand === "spy"
         ? { raw: argv.raw ?? false, dedupe: argv.dedupe ?? true, tui: argv.tui ?? false }
         : DEFAULT_SPY_OPTIONS,
@@ -218,7 +205,7 @@ function fail(message: string, error: Error): never {
   throw error instanceof Error ? error : new Error(message);
 }
 
-function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs & ImagesArgs>): RootcellSubcommand | undefined {
+function parsedSubcommand(argv: ArgumentsCamelCase<GuestArgs & SpyArgs>): RootcellSubcommand | undefined {
   const command = argv._[0];
   return typeof command === "string" && isRootcellSubcommand(command) ? command : undefined;
 }

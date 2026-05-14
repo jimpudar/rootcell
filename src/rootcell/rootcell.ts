@@ -9,7 +9,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
-import { DEFAULT_IMAGE_MANIFEST_URL, buildLocalImages } from "./images.ts";
+import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { commandExists, runCapture, runInherited } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
@@ -23,8 +23,6 @@ const VM_FILES: VmFileSet = {
     "flake.nix",
     "common.nix",
     "agent-vm.nix",
-    "builder-vm.nix",
-    "vfkit-image.nix",
     "home.nix",
     "network.nix",
     "pi",
@@ -33,8 +31,6 @@ const VM_FILES: VmFileSet = {
     "flake.nix",
     "common.nix",
     "firewall-vm.nix",
-    "builder-vm.nix",
-    "vfkit-image.nix",
     "network.nix",
     "proxy",
     "src/bin/reload.ts",
@@ -104,14 +100,6 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
   }
 
   async runAfterEnvironment(subcommand: string, rest: readonly string[], spyOptions: SpyOptions): Promise<number> {
-    if (subcommand === "images") {
-      if (rest.length !== 1 || rest[0] !== "build") {
-        log("usage: ./rootcell images build");
-        return 2;
-      }
-      return buildLocalImages(this.config, log);
-    }
-
     this.writeNetworkLocalNix();
 
     if (subcommand === "pubkey") {

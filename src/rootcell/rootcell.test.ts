@@ -5,6 +5,9 @@ import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { buildConfig } from "./rootcell.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
+import { createProviderBundle } from "./providers/factory.ts";
+import { limaListJsonContainsSocket, limaStatusFromOutput } from "./providers/lima.ts";
+import { MacOsSocketVmnetNetworkProvider } from "./providers/macos-socket-vmnet.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -136,6 +139,70 @@ describe("environment parsing", () => {
     expect(config.agentIp).toBe("192.168.109.3");
     expect(config.vmnetSocketPath).toBe("/private/var/run/rootcell/501/dev.sock");
     expect(config.vmStartTimeout).toBe("5s");
+  });
+});
+
+describe("VM and network providers", () => {
+  test("factory wires the current Lima and macOS vmnet providers", () => {
+    const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
+    expect(providers.network.id).toBe("macos-socket-vmnet");
+    expect(providers.vm.id).toBe("lima");
+  });
+
+  test("macOS socket vmnet provider exposes guest config and Lima attachments", () => {
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const plan = new MacOsSocketVmnetNetworkProvider(config, ignoreLog).plan();
+    expect(plan).toEqual({
+      provider: "macos-socket-vmnet",
+      guest: {
+        firewallIp: "192.168.109.2",
+        agentIp: "192.168.109.3",
+        networkPrefix: 24,
+        agentPrivateInterface: "enp0s1",
+        firewallPrivateInterface: "enp0s2",
+        firewallEgressInterface: "enp0s1",
+      },
+      vms: {
+        agent: {
+          kind: "lima-socket",
+          socketPath: "/private/var/run/rootcell/501/dev.sock",
+          sshOverVsock: true,
+          disableDefaultUsernet: true,
+          useDefaultNat: false,
+        },
+        firewall: {
+          kind: "lima-socket",
+          socketPath: "/private/var/run/rootcell/501/dev.sock",
+          sshOverVsock: true,
+          disableDefaultUsernet: false,
+          useDefaultNat: true,
+        },
+      },
+    });
+  });
+
+  test("Lima status output maps to provider-neutral VM states", () => {
+    expect(limaStatusFromOutput("")).toEqual({ state: "missing" });
+    expect(limaStatusFromOutput("Running\n")).toEqual({ state: "running" });
+    expect(limaStatusFromOutput("Stopped")).toEqual({ state: "stopped" });
+    expect(limaStatusFromOutput("Broken")).toEqual({ state: "unexpected", detail: "Broken" });
+  });
+
+  test("Lima socket compatibility parser finds nested socket attachments", () => {
+    const socketPath = "/private/var/run/rootcell/501/dev.sock";
+    const output = JSON.stringify([
+      {
+        name: "agent-dev",
+        config: {
+          networks: [
+            { socket: socketPath },
+          ],
+        },
+      },
+    ]);
+    expect(limaListJsonContainsSocket(output, socketPath)).toBe(true);
+    expect(limaListJsonContainsSocket(output, "/private/var/run/rootcell/501/other.sock")).toBe(false);
+    expect(limaListJsonContainsSocket(`{"socket":${JSON.stringify(socketPath)}`, socketPath)).toBe(true);
   });
 });
 

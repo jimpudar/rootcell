@@ -423,3 +423,10 @@ Inspect the live allowlists inside the firewall VM:
 limactl shell firewall -- cat /etc/agent-vm/allowed-https.txt
 limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
 ```
+
+## License
+
+Copyright (C) 2026 Jim Pudar.
+
+rootcell is licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). See [LICENSE](LICENSE).

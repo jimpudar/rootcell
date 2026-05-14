@@ -31,9 +31,6 @@ export interface RootcellConfig {
   readonly vmnetSocketPath: string;
   readonly vmnetPidPath: string;
   readonly vmStartTimeout: string;
-  readonly socketVmnetDst: string;
-  readonly rootcellVmnetHelperSrc: string;
-  readonly rootcellVmnetHelperDst: string;
 }
 
 export interface ParsedRootcellRunArgs {

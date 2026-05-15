@@ -433,12 +433,6 @@ checked-in defaults.
 
 ## Troubleshooting
 
-See what the firewall is denying:
-
-```bash
-./rootcell --instance default spy
-```
-
 See formatted Bedrock Runtime requests and responses:
 
 ```bash

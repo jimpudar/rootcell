@@ -108,9 +108,9 @@ security add-generic-password -a "$USER" -s aws-bedrock-api-key -w "<your-key>"
 ./rootcell
 ```
 
-First run downloads compatible rootcell VM images from the `rootcell-images`
-release manifest, creates instance-local vfkit disks, and provisions the VMs.
-Later runs normally take seconds.
+First run downloads compatible rootcell VM images from the configured release
+manifest, creates instance-local vfkit disks, and provisions the VMs. Later runs
+normally take seconds.
 
 ### VM Provider Selection
 
@@ -134,13 +134,14 @@ Image resolution is controlled by:
 
 ```bash
 ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/rootcell-ai/rootcell-images/releases/latest/download/manifest.json
-ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-images
+ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-image-dist
 ```
 
 `ROOTCELL_IMAGE_DIR` must contain `manifest.json` plus the image files named in
-that manifest. Image artifacts are built and published from the separate
-[`rootcell-images`](https://github.com/rootcell-ai/rootcell-images) repository;
-this repository only consumes those release assets at VM creation time.
+that manifest. Image build definitions now live in `images/` and are exposed by
+this repository's root flake. The default manifest URL still points at the
+existing `rootcell-images` release stream until an in-repo image release is
+published and promoted.
 
 ## Daily Workflow
 
@@ -409,7 +410,7 @@ guests. For Intel Macs or x86 Linux guests, update these together:
 
 - `system` in `flake.nix`
 - The pi release tarball URL and hash in `home.nix`
-- The pinned rootcell source and image artifacts in `rootcell-images`
+- The image build outputs and release assets under `images/`
 
 ### Multiple Instances
 

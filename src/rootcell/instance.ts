@@ -9,7 +9,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { InstanceState, RootcellInstance } from "./types.ts";
+import { parseSchema } from "./schema.ts";
+import {
+  InstanceStateSchema,
+  RootcellInstanceSchema,
+  type InstanceState,
+  type RootcellInstance,
+} from "./types.ts";
 
 const STATE_SCHEMA_VERSION = 1;
 const DEFAULT_INSTANCE = "default";
@@ -89,7 +95,7 @@ export function loadRootcellInstance(repoDir: string, instanceName: string, env:
   mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.generatedDir, { recursive: true, mode: 0o700 });
   const state = ensureInstanceState(repoDir, paths, env);
-  return {
+  return parseSchema(RootcellInstanceSchema, {
     name: paths.name,
     dir: paths.dir,
     envPath: paths.envPath,
@@ -99,7 +105,7 @@ export function loadRootcellInstance(repoDir: string, instanceName: string, env:
     generatedDir: paths.generatedDir,
     statePath: paths.statePath,
     state,
-  };
+  }, `invalid rootcell instance for ${paths.name}`);
 }
 
 export function instancePaths(repoDir: string, instanceName: string): InstancePaths {
@@ -180,37 +186,9 @@ function readState(name: string, path: string): InstanceState {
 }
 
 function validateState(name: string, raw: unknown): InstanceState {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error(`invalid rootcell instance state for ${name}: expected object`);
-  }
-  const record = raw as Record<string, unknown>;
-  const schemaVersion = record.schemaVersion;
-  const subnet = stringField(record, "subnet", name);
-  const networkPrefix = record.networkPrefix;
-  const firewallIp = stringField(record, "firewallIp", name);
-  const agentIp = stringField(record, "agentIp", name);
-  if (schemaVersion !== STATE_SCHEMA_VERSION) {
-    throw new Error(`invalid rootcell instance state for ${name}: unsupported schemaVersion`);
-  }
-  if (networkPrefix !== 24) {
-    throw new Error(`invalid rootcell instance state for ${name}: networkPrefix must be 24`);
-  }
-  validateSubnetAndHosts(subnet, firewallIp, agentIp, name);
-  return {
-    schemaVersion: STATE_SCHEMA_VERSION,
-    subnet,
-    networkPrefix: 24,
-    firewallIp,
-    agentIp,
-  };
-}
-
-function stringField(record: Record<string, unknown>, field: string, name: string): string {
-  const value = record[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`invalid rootcell instance state for ${name}: ${field} must be a non-empty string`);
-  }
-  return value;
+  const state = parseSchema(InstanceStateSchema, raw, `invalid rootcell instance state for ${name}`);
+  validateSubnetAndHosts(state.subnet, state.firewallIp, state.agentIp, name);
+  return state;
 }
 
 function stateFromEnv(paths: InstancePaths, env: NodeJS.ProcessEnv): InstanceState | null {

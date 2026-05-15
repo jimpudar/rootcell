@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { resolveHostTool } from "../host-tools.ts";
+import { NonEmptyStringSchema, PositiveSafeIntegerSchema } from "../schema.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { NetworkPlan, NetworkProvider, VmNetworkAttachment } from "./types.ts";
 
@@ -15,11 +17,13 @@ export interface VfkitNetworkAttachment extends VmNetworkAttachment {
   readonly useNat: boolean;
 }
 
-interface PrivateLinkState {
-  readonly pid: number;
-  readonly firewallSocketPath: string;
-  readonly agentSocketPath: string;
-}
+const PrivateLinkStateSchema = z.object({
+  pid: PositiveSafeIntegerSchema,
+  firewallSocketPath: NonEmptyStringSchema,
+  agentSocketPath: NonEmptyStringSchema,
+});
+
+type PrivateLinkState = Readonly<z.infer<typeof PrivateLinkStateSchema>>;
 
 export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAttachment> {
   readonly id = "macos-vfkit";
@@ -124,23 +128,8 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
       return null;
     }
     try {
-      const raw = JSON.parse(readFileSync(this.statePath(), "utf8")) as unknown;
-      if (typeof raw !== "object" || raw === null) {
-        return null;
-      }
-      const record = raw as Record<string, unknown>;
-      const pid = record.pid;
-      const firewallSocketPath = record.firewallSocketPath;
-      const agentSocketPath = record.agentSocketPath;
-      if (
-        typeof pid !== "number"
-        || !Number.isSafeInteger(pid)
-        || typeof firewallSocketPath !== "string"
-        || typeof agentSocketPath !== "string"
-      ) {
-        return null;
-      }
-      return { pid, firewallSocketPath, agentSocketPath };
+      const raw: unknown = JSON.parse(readFileSync(this.statePath(), "utf8"));
+      return PrivateLinkStateSchema.parse(raw);
     } catch {
       return null;
     }

@@ -1,28 +1,38 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { resolveHostTool } from "../host-tools.ts";
 import { ImageStore } from "../images.ts";
 import { runCapture, runInherited } from "../process.ts";
+import { NonEmptyStringSchema, parseSchema, PositiveSafeIntegerSchema } from "../schema.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { CommandResult, InheritedCommandResult } from "../types.ts";
 import type { CopyToGuestOptions, ExecOptions, VmProvider, VmRole, VmStatus } from "./types.ts";
 import type { VfkitNetworkAttachment } from "./macos-vfkit-network.ts";
 import { ProxyJumpSshTransport, type ProxyJumpSshEndpoints } from "../transports/proxyjump-ssh.ts";
 
-interface VfkitVmState {
-  readonly provider: "vfkit";
-  readonly name: string;
-  readonly role: VmRole;
-  readonly pid: number;
-  readonly diskPath: string;
-  readonly efiVariableStorePath: string;
-  readonly restSocketPath: string;
-  readonly logPath: string;
-  readonly privateMac: string;
-  readonly controlMac?: string;
-  readonly firewallControlIp?: string;
-}
+const VfkitProviderSchema = z.custom<"vfkit">((value) => value === "vfkit", { message: "provider mismatch" });
+const VfkitVmRoleSchema = z.custom<VmRole>(
+  (value) => value === "agent" || value === "firewall",
+  { message: "role mismatch" },
+);
+
+const VfkitVmStateSchema = z.object({
+  provider: VfkitProviderSchema,
+  name: NonEmptyStringSchema,
+  role: VfkitVmRoleSchema,
+  pid: PositiveSafeIntegerSchema,
+  diskPath: NonEmptyStringSchema,
+  efiVariableStorePath: NonEmptyStringSchema,
+  restSocketPath: NonEmptyStringSchema,
+  logPath: NonEmptyStringSchema,
+  privateMac: NonEmptyStringSchema,
+  controlMac: NonEmptyStringSchema.optional(),
+  firewallControlIp: NonEmptyStringSchema.optional(),
+});
+
+type VfkitVmState = Readonly<z.infer<typeof VfkitVmStateSchema>>;
 
 export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
   readonly id = "vfkit";
@@ -134,6 +144,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
       cloudInitDir: this.writeCloudInit(input.role, input.name, input.network),
       network: input.network,
     });
+    rmSync(this.restSocketPath(input.name), { force: true });
     const child = spawn(this.vfkitBin, args, {
       detached: true,
       stdio: "ignore",
@@ -265,7 +276,8 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
       return null;
     }
     try {
-      return parseVfkitVmState(JSON.parse(readFileSync(path, "utf8")));
+      const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+      return parseVfkitVmState(raw);
     } catch {
       return null;
     }
@@ -444,33 +456,7 @@ export function vfkitArgs(input: {
 }
 
 export function parseVfkitVmState(raw: unknown): VfkitVmState {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("invalid vfkit VM state: expected object");
-  }
-  const record = raw as Record<string, unknown>;
-  if (record.provider !== "vfkit") {
-    throw new Error("invalid vfkit VM state: provider mismatch");
-  }
-  const name = stringField(record, "name");
-  const roleRaw = record.role;
-  if (roleRaw !== "agent" && roleRaw !== "firewall") {
-    throw new Error("invalid vfkit VM state: role mismatch");
-  }
-  const firewallControlIp = optionalStringField(record, "firewallControlIp");
-  const controlMac = optionalStringField(record, "controlMac");
-  return {
-    provider: "vfkit",
-    name,
-    role: roleRaw,
-    pid: numberField(record, "pid"),
-    diskPath: stringField(record, "diskPath"),
-    efiVariableStorePath: stringField(record, "efiVariableStorePath"),
-    restSocketPath: stringField(record, "restSocketPath"),
-    logPath: stringField(record, "logPath"),
-    privateMac: stringField(record, "privateMac"),
-    ...(controlMac === undefined ? {} : { controlMac }),
-    ...(firewallControlIp === undefined ? {} : { firewallControlIp }),
-  };
+  return parseSchema(VfkitVmStateSchema, raw, "invalid vfkit VM state");
 }
 
 export function lookupDhcpLease(mac: string, leasesPath = "/var/db/dhcpd_leases", fallbackName?: string): string | null {
@@ -528,33 +514,6 @@ function processIsRunning(pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`invalid vfkit VM state: ${field} must be a non-empty string`);
-  }
-  return value;
-}
-
-function optionalStringField(record: Record<string, unknown>, field: string): string | undefined {
-  const value = record[field];
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`invalid vfkit VM state: ${field} must be a non-empty string`);
-  }
-  return value;
-}
-
-function numberField(record: Record<string, unknown>, field: string): number {
-  const value = record[field];
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`invalid vfkit VM state: ${field} must be a positive integer`);
-  }
-  return value;
 }
 
 function dhcpName(block: string): string | null {

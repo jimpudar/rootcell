@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { SecretMapping } from "./types.ts";
+import { EnvironmentVariableNameSchema } from "./schema.ts";
+import { SecretMappingSchema, type SecretMapping } from "./types.ts";
 
 export function loadDotEnv(path: string, env: NodeJS.ProcessEnv): void {
   if (!existsSync(path)) {
@@ -12,7 +13,7 @@ export function loadDotEnv(path: string, env: NodeJS.ProcessEnv): void {
     }
     const key = equalsAt === -1 ? line : line.slice(0, equalsAt);
     const value = equalsAt === -1 ? "" : line.slice(equalsAt + 1);
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!EnvironmentVariableNameSchema.safeParse(key).success) {
       throw new Error(`invalid environment variable name in .env: ${key}`);
     }
     if (Object.prototype.hasOwnProperty.call(env, key)) {
@@ -34,13 +35,13 @@ export function parseSecretMappings(text: string): SecretMapping[] {
     }
     const envName = line.slice(0, equalsAt);
     const service = line.slice(equalsAt + 1);
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
+    if (!EnvironmentVariableNameSchema.safeParse(envName).success) {
       throw new Error(`invalid secret environment variable name in secrets.env: ${envName}`);
     }
     if (service.length === 0) {
       throw new Error(`empty Keychain service name for ${envName}`);
     }
-    mappings.push({ envName, service });
+    mappings.push(SecretMappingSchema.parse({ envName, service }));
   }
   return mappings;
 }

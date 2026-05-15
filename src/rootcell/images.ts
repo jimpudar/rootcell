@@ -9,8 +9,10 @@ import {
   renameSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { z } from "zod";
 import { resolveHostTool } from "./host-tools.ts";
 import { runCapture, runInherited, runStdoutToFile } from "./process.ts";
+import { NonEmptyStringSchema, parseSchema, PositiveSafeIntegerSchema } from "./schema.ts";
 import type { RootcellConfig } from "./types.ts";
 
 export const ROOTCELL_IMAGE_SCHEMA_VERSION = 1;
@@ -18,31 +20,49 @@ export const ROOTCELL_GUEST_API_VERSION = 1;
 export const ROOTCELL_CLI_IMAGE_CONTRACT_VERSION = 1;
 export const DEFAULT_IMAGE_MANIFEST_URL = "https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json";
 
-export type RootcellImageRole = "agent" | "firewall" | "builder";
-export type RootcellImageCompression = "zstd" | "none";
+export const RootcellImageRoleSchema = z.enum(["agent", "firewall", "builder"]);
+export type RootcellImageRole = z.infer<typeof RootcellImageRoleSchema>;
 
-export interface RootcellImageManifest {
-  readonly schemaVersion: 1;
-  readonly guestApiVersion: 1;
-  readonly rootcellSourceRevision: string;
-  readonly nixpkgsRevision: string;
-  readonly rootcellCliContract: {
-    readonly min: number;
-    readonly max: number;
-  };
-  readonly images: readonly RootcellImageEntry[];
-}
+export const RootcellImageCompressionSchema = z.enum(["zstd", "none"]);
+export type RootcellImageCompression = z.infer<typeof RootcellImageCompressionSchema>;
 
-export interface RootcellImageEntry {
-  readonly role: RootcellImageRole;
-  readonly architecture: "aarch64-linux";
-  readonly fileName?: string;
-  readonly url: string;
-  readonly compression: RootcellImageCompression;
-  readonly compressedSize: number;
-  readonly rawSize: number;
-  readonly sha256: string;
-}
+const RootcellImageContractSchema = z.object({
+  min: PositiveSafeIntegerSchema,
+  max: PositiveSafeIntegerSchema,
+}).refine((contract) => contract.min <= contract.max, {
+  message: "rootcellCliContract min must be <= max",
+});
+
+export const RootcellImageEntrySchema = z.object({
+  role: RootcellImageRoleSchema,
+  architecture: z.literal("aarch64-linux"),
+  fileName: NonEmptyStringSchema.optional(),
+  url: NonEmptyStringSchema,
+  compression: RootcellImageCompressionSchema.default("zstd"),
+  compressedSize: PositiveSafeIntegerSchema,
+  rawSize: PositiveSafeIntegerSchema,
+  sha256: z.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase hex SHA-256 digest"),
+});
+
+export type RootcellImageEntry = Readonly<z.infer<typeof RootcellImageEntrySchema>>;
+
+export const RootcellImageManifestSchema = z.object({
+  schemaVersion: z.literal(ROOTCELL_IMAGE_SCHEMA_VERSION),
+  guestApiVersion: z.literal(ROOTCELL_GUEST_API_VERSION),
+  rootcellSourceRevision: NonEmptyStringSchema,
+  nixpkgsRevision: NonEmptyStringSchema,
+  rootcellCliContract: RootcellImageContractSchema,
+  images: z.array(RootcellImageEntrySchema).min(1, "must be a non-empty array"),
+});
+
+type RootcellImageManifestOutput = z.infer<typeof RootcellImageManifestSchema>;
+
+export type RootcellImageManifest = Readonly<
+  Omit<RootcellImageManifestOutput, "rootcellCliContract" | "images"> & {
+    readonly rootcellCliContract: Readonly<RootcellImageManifestOutput["rootcellCliContract"]>;
+    readonly images: readonly RootcellImageEntry[];
+  }
+>;
 
 export class ImageStore {
   private zstdBin = "";
@@ -121,39 +141,14 @@ export class ImageStore {
 }
 
 export function parseRootcellImageManifest(raw: unknown): RootcellImageManifest {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("invalid rootcell image manifest: expected object");
-  }
-  const record = raw as Record<string, unknown>;
-  const schemaVersion = record.schemaVersion;
-  const guestApiVersion = record.guestApiVersion;
-  if (schemaVersion !== ROOTCELL_IMAGE_SCHEMA_VERSION) {
-    throw new Error("incompatible rootcell image manifest: unsupported schemaVersion");
-  }
-  if (guestApiVersion !== ROOTCELL_GUEST_API_VERSION) {
-    throw new Error(`incompatible rootcell image manifest: guestApiVersion ${String(guestApiVersion)} is not supported`);
-  }
-  const rootcellSourceRevision = stringField(record, "rootcellSourceRevision");
-  const nixpkgsRevision = stringField(record, "nixpkgsRevision");
-  const rootcellCliContract = parseContract(record.rootcellCliContract);
+  const manifest = parseSchema(RootcellImageManifestSchema, raw, "invalid rootcell image manifest");
   if (
-    ROOTCELL_CLI_IMAGE_CONTRACT_VERSION < rootcellCliContract.min
-    || ROOTCELL_CLI_IMAGE_CONTRACT_VERSION > rootcellCliContract.max
+    ROOTCELL_CLI_IMAGE_CONTRACT_VERSION < manifest.rootcellCliContract.min
+    || ROOTCELL_CLI_IMAGE_CONTRACT_VERSION > manifest.rootcellCliContract.max
   ) {
     throw new Error("incompatible rootcell image manifest: CLI image contract is not supported");
   }
-  const imagesRaw = record.images;
-  if (!Array.isArray(imagesRaw) || imagesRaw.length === 0) {
-    throw new Error("invalid rootcell image manifest: images must be a non-empty array");
-  }
-  return {
-    schemaVersion: ROOTCELL_IMAGE_SCHEMA_VERSION,
-    guestApiVersion: ROOTCELL_GUEST_API_VERSION,
-    rootcellSourceRevision,
-    nixpkgsRevision,
-    rootcellCliContract,
-    images: imagesRaw.map(parseImageEntry),
-  };
+  return manifest;
 }
 
 export function imageForRole(manifest: RootcellImageManifest, role: RootcellImageRole): RootcellImageEntry {
@@ -196,80 +191,4 @@ export function sha256File(path: string): string {
   } finally {
     closeSync(fd);
   }
-}
-
-function parseImageEntry(raw: unknown): RootcellImageEntry {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("invalid rootcell image manifest: image entries must be objects");
-  }
-  const record = raw as Record<string, unknown>;
-  const role = roleField(record.role);
-  const architecture = record.architecture;
-  if (architecture !== "aarch64-linux") {
-    throw new Error(`invalid rootcell image manifest: unsupported architecture for ${role}`);
-  }
-  const compression = compressionField(record.compression);
-  return {
-    role,
-    architecture,
-    ...(record.fileName === undefined ? {} : { fileName: stringField(record, "fileName") }),
-    url: stringField(record, "url"),
-    compression,
-    compressedSize: positiveNumberField(record, "compressedSize"),
-    rawSize: positiveNumberField(record, "rawSize"),
-    sha256: sha256Field(record.sha256),
-  };
-}
-
-function parseContract(raw: unknown): RootcellImageManifest["rootcellCliContract"] {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("invalid rootcell image manifest: rootcellCliContract must be an object");
-  }
-  const record = raw as Record<string, unknown>;
-  const min = positiveNumberField(record, "min");
-  const max = positiveNumberField(record, "max");
-  if (min > max) {
-    throw new Error("invalid rootcell image manifest: rootcellCliContract min must be <= max");
-  }
-  return { min, max };
-}
-
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`invalid rootcell image manifest: ${field} must be a non-empty string`);
-  }
-  return value;
-}
-
-function positiveNumberField(record: Record<string, unknown>, field: string): number {
-  const value = record[field];
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`invalid rootcell image manifest: ${field} must be a positive integer`);
-  }
-  return value;
-}
-
-function roleField(value: unknown): RootcellImageRole {
-  if (value === "agent" || value === "firewall" || value === "builder") {
-    return value;
-  }
-  throw new Error("invalid rootcell image manifest: unsupported image role");
-}
-
-function compressionField(value: unknown): RootcellImageCompression {
-  if (value === undefined || value === "zstd") {
-    return "zstd";
-  }
-  if (value === "none") {
-    return "none";
-  }
-  throw new Error("invalid rootcell image manifest: unsupported image compression");
-}
-
-function sha256Field(value: unknown): string {
-  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
-    throw new Error("invalid rootcell image manifest: sha256 must be a lowercase hex SHA-256 digest");
-  }
-  return value;
 }

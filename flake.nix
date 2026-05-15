@@ -45,6 +45,48 @@
         ];
       };
 
+      mkVfkitImage = module: nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit username nixos-lima; };
+        modules = [ module ./images/vfkit-image.nix ];
+      };
+
+      agentImage = (mkVfkitImage ./agent-vm.nix).config.system.build.image;
+      firewallImage = (mkVfkitImage ./firewall-vm.nix).config.system.build.image;
+      builderImage = (mkVfkitImage ./images/builder-vm.nix).config.system.build.image;
+      rootcellSourceRevision = self.rev or self.dirtyRev or "unknown";
+      nixpkgsRevision = nixpkgs.rev or "unknown";
+
+      rootcellImages = pkgs.runCommand "rootcell-images" { nativeBuildInputs = [ pkgs.coreutils pkgs.zstd ]; } ''
+        mkdir -p "$out"
+        cp ${agentImage}/*.img "$out/agent.raw"
+        cp ${firewallImage}/*.img "$out/firewall.raw"
+        cp ${builderImage}/*.img "$out/builder.raw"
+        agent_raw_size="$(stat -c%s "$out/agent.raw")"
+        firewall_raw_size="$(stat -c%s "$out/firewall.raw")"
+        builder_raw_size="$(stat -c%s "$out/builder.raw")"
+        zstd -19 --rm "$out/agent.raw" -o "$out/agent.raw.zst"
+        zstd -19 --rm "$out/firewall.raw" -o "$out/firewall.raw.zst"
+        zstd -19 --rm "$out/builder.raw" -o "$out/builder.raw.zst"
+        agent_sha="$(sha256sum "$out/agent.raw.zst" | cut -d ' ' -f1)"
+        firewall_sha="$(sha256sum "$out/firewall.raw.zst" | cut -d ' ' -f1)"
+        builder_sha="$(sha256sum "$out/builder.raw.zst" | cut -d ' ' -f1)"
+        cat > "$out/manifest.json" <<JSON
+        {
+          "schemaVersion": 1,
+          "guestApiVersion": 1,
+          "rootcellSourceRevision": "${rootcellSourceRevision}",
+          "nixpkgsRevision": "${nixpkgsRevision}",
+          "rootcellCliContract": { "min": 1, "max": 1 },
+          "images": [
+            { "role": "agent", "architecture": "aarch64-linux", "fileName": "agent.raw.zst", "url": "agent.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/agent.raw.zst"), "rawSize": $agent_raw_size, "sha256": "$agent_sha" },
+            { "role": "firewall", "architecture": "aarch64-linux", "fileName": "firewall.raw.zst", "url": "firewall.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/firewall.raw.zst"), "rawSize": $firewall_raw_size, "sha256": "$firewall_sha" },
+            { "role": "builder", "architecture": "aarch64-linux", "fileName": "builder.raw.zst", "url": "builder.raw.zst", "compression": "zstd", "compressedSize": $(stat -c%s "$out/builder.raw.zst"), "rawSize": $builder_raw_size, "sha256": "$builder_sha" }
+          ]
+        }
+JSON
+      '';
+
       # Host-side packages. vfkit is the default macOS VM runtime; the
       # patched Lima and socket_vmnet outputs remain as rollback support.
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
@@ -79,6 +121,9 @@
         firewall-vm = mkVM ./firewall-vm.nix;
         agent-vm-vfkit    = mkVfkitVM ./agent-vm.nix;
         firewall-vm-vfkit = mkVfkitVM ./firewall-vm.nix;
+        agent-vm-vfkit-image    = mkVfkitImage ./agent-vm.nix;
+        firewall-vm-vfkit-image = mkVfkitImage ./firewall-vm.nix;
+        builder-vm-vfkit-image  = mkVfkitImage ./images/builder-vm.nix;
       };
 
       # Home Manager only attaches to the agent VM. The firewall VM is an
@@ -89,11 +134,18 @@
         modules = [ ./home.nix ];
       };
 
+      inherit rootcellSourceRevision nixpkgsRevision;
+
       packages = forEachDarwin (sys: {
         lima         = darwinPkgs.${sys}.lima;
         vfkit        = darwinPkgs.${sys}.vfkit;
         socket_vmnet = darwinPkgs.${sys}.socket_vmnet;
         default      = darwinPkgs.${sys}.vfkit;
-      });
+      }) // {
+        aarch64-linux = {
+          inherit agentImage firewallImage builderImage rootcellImages;
+          default = rootcellImages;
+        };
+      };
     };
 }

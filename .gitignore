@@ -22,6 +22,13 @@ proxy/allowed-dns.txt
 .claude/
 node_modules/
 
+# Image release build outputs.
+dist/
+work/
+result-*
+*.raw
+*.raw.zst
+
 # Per-deployment TLS-MITM CA. agent-vm-ca.pem (key+cert) lives only on
 # the host and the firewall VM; agent-vm-ca-cert.pem (cert only) is
 # also installed in the agent VM trust store. Never commit either —

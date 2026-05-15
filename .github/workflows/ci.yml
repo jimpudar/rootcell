@@ -100,6 +100,10 @@ jobs:
           nix eval --raw .#nixosConfigurations.agent-vm.config.system.build.toplevel.drvPath
           nix eval --raw .#nixosConfigurations.firewall-vm.config.system.build.toplevel.drvPath
           nix eval --raw .#homeConfigurations.luser.activationPackage.drvPath
+          nix eval --raw .#nixosConfigurations.agent-vm-vfkit-image.config.system.build.image.drvPath
+          nix eval --raw .#nixosConfigurations.firewall-vm-vfkit-image.config.system.build.image.drvPath
+          nix eval --raw .#nixosConfigurations.builder-vm-vfkit-image.config.system.build.image.drvPath
+          nix eval --raw .#packages.aarch64-linux.rootcellImages.drvPath
 
       - name: Build Linux VM and Home Manager closures
         run: |

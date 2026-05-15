@@ -1,0 +1,98 @@
+name: Release rootcell images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image release tag, e.g. image-v20260515.1"
+        required: true
+      prerelease:
+        description: "Mark release as prerelease"
+        required: true
+        default: "false"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish image assets
+    runs-on: blacksmith-16vcpu-ubuntu-2404-arm
+    timeout-minutes: 180
+
+    steps:
+      - name: Validate image tag input
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^image-v[0-9]{8}\.[0-9]+$ ]]; then
+            echo "::error::Image release tags must match image-vYYYYMMDD.N, for example image-v20260515.1."
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify explicit image tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git rev-parse --verify "refs/tags/$TAG"
+          tag_commit="$(git rev-list -n 1 "$TAG")"
+          head_commit="$(git rev-parse HEAD)"
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::Checked out $head_commit, but $TAG points to $tag_commit."
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          extra-conf: |
+            system-features = nixos-test benchmark big-parallel kvm uid-range
+
+      - name: Require KVM for Nix builds
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is unavailable on this runner; use an ARM64 runner with KVM support."
+            exit 1
+          fi
+
+          sudo chmod 666 /dev/kvm
+          nix config show system-features
+
+      - name: Show disk
+        run: df -h
+
+      - name: Build release assets
+        run: images/scripts/build-release.sh
+
+      - name: Validate release assets
+        run: images/scripts/validate-dist.sh dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=()
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${{ inputs.tag }}" \
+            dist/manifest.json \
+            dist/agent.raw.zst \
+            dist/firewall.raw.zst \
+            dist/builder.raw.zst \
+            --title "${{ inputs.tag }}" \
+            --notes "rootcell image release for $(nix eval --raw .#rootcellSourceRevision)" \
+            --verify-tag \
+            --latest=false \
+            "${args[@]}"

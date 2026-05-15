@@ -19,7 +19,7 @@ concurrency:
 jobs:
   static-unit:
     name: Static checks and unit tests
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     env:
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.pycache
@@ -64,7 +64,7 @@ jobs:
 
   nix-linux:
     name: Nix Linux build
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 90
 
     steps:

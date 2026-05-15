@@ -1,4 +1,4 @@
-name: Release rootcell images
+name: Release rootcell image assets
 
 on:
   workflow_dispatch:
@@ -84,6 +84,8 @@ jobs:
           args=()
           if [ "${{ inputs.prerelease }}" = "true" ]; then
             args+=(--prerelease)
+          else
+            args+=(--latest)
           fi
 
           gh release create "${{ inputs.tag }}" \
@@ -94,5 +96,4 @@ jobs:
             --title "${{ inputs.tag }}" \
             --notes "rootcell image release for $(nix eval --raw .#rootcellSourceRevision)" \
             --verify-tag \
-            --latest=false \
             "${args[@]}"

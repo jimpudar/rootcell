@@ -149,7 +149,7 @@ describe("environment parsing", () => {
     expect(config.agentIp).toBe("192.168.109.3");
     expect(config.vmnetSocketPath).toBe("/private/var/run/rootcell/501/dev.sock");
     expect(config.vmStartTimeout).toBe("5s");
-    expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell-images/releases/latest/download/manifest.json");
+    expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json");
   });
 });
 
@@ -412,11 +412,11 @@ describe("rootcell image manifest contract", () => {
   test("resolves relative image asset URLs against the manifest URL", () => {
     expect(imageDownloadUrl(
       "agent.raw.zst",
-      "https://github.com/rootcell-ai/rootcell-images/releases/download/guest-v1/manifest.json",
-    )).toBe("https://github.com/rootcell-ai/rootcell-images/releases/download/guest-v1/agent.raw.zst");
+      "https://github.com/rootcell-ai/rootcell/releases/download/guest-v1/manifest.json",
+    )).toBe("https://github.com/rootcell-ai/rootcell/releases/download/guest-v1/agent.raw.zst");
     expect(imageDownloadUrl(
       "https://downloads.example/rootcell/agent.raw.zst",
-      "https://github.com/rootcell-ai/rootcell-images/releases/download/guest-v1/manifest.json",
+      "https://github.com/rootcell-ai/rootcell/releases/download/guest-v1/manifest.json",
     )).toBe("https://downloads.example/rootcell/agent.raw.zst");
   });
 

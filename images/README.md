@@ -42,7 +42,5 @@ workflow checks out the tag, verifies that it exists, and passes `--verify-tag`
 to `gh release create` so GitHub CLI cannot create an implicit tag from the
 default branch.
 
-The workflow targets Blacksmith's `blacksmith-16vcpu-ubuntu-2404-arm` runner and
-requires `/dev/kvm` for the NixOS disk-image build. If that runner does not
-expose KVM, use an equivalent ARM64 runner with KVM support before publishing an
-official release.
+The workflow targets runners labeled `linux`, `arm64`, and `kvm`. The runner
+must expose `/dev/kvm` for the NixOS disk-image build.

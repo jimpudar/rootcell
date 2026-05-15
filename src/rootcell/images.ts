@@ -9,7 +9,7 @@ import {
   renameSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { runCapture, runInherited, runStdoutToFile } from "./process.ts";
+import { commandExists, runCapture, runInherited, runStdoutToFile } from "./process.ts";
 import type { RootcellConfig } from "./types.ts";
 
 export const ROOTCELL_IMAGE_SCHEMA_VERSION = 1;
@@ -44,6 +44,8 @@ export interface RootcellImageEntry {
 }
 
 export class ImageStore {
+  private zstdBin = process.env.ROOTCELL_ZSTD ?? "";
+
   constructor(
     private readonly config: RootcellConfig,
     private readonly log: (message: string) => void,
@@ -97,11 +99,32 @@ export class ImageStore {
   private expandImage(entry: RootcellImageEntry, compressedPath: string, rawPath: string): void {
     const tmp = `${rawPath}.tmp`;
     if (entry.compression === "zstd") {
-      runStdoutToFile("zstd", ["-d", "-c", compressedPath], tmp);
+      runStdoutToFile(this.ensureZstd(), ["-d", "-c", compressedPath], tmp);
     } else {
       runInherited("cp", [compressedPath, tmp]);
     }
     renameSync(tmp, rawPath);
+  }
+
+  private ensureZstd(): string {
+    if (this.zstdBin.length > 0) {
+      return this.zstdBin;
+    }
+    if (commandExists("zstd")) {
+      this.zstdBin = "zstd";
+      return this.zstdBin;
+    }
+    const result = runCapture("nix", [
+      "build",
+      "--no-link",
+      "--print-out-paths",
+      `${this.config.repoDir}#zstd`,
+    ], { allowFailure: true });
+    if (result.status !== 0) {
+      throw new Error(`failed to build zstd from ${this.config.repoDir}/flake.nix:\n${result.stderr}`);
+    }
+    this.zstdBin = join(firstToken(result.stdout), "bin/zstd");
+    return this.zstdBin;
   }
 }
 
@@ -181,6 +204,14 @@ export function sha256File(path: string): string {
   } finally {
     closeSync(fd);
   }
+}
+
+function firstToken(output: string): string {
+  const token = output.trim().split(/\s+/)[0];
+  if (token === undefined || token.length === 0) {
+    throw new Error("command produced no output");
+  }
+  return token;
 }
 
 function parseImageEntry(raw: unknown): RootcellImageEntry {

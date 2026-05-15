@@ -10,9 +10,9 @@ in
 # Firewall VM: a tiny appliance VM that brokers all egress for the agent VM.
 #
 # Two NICs (kernel names from systemd predictable naming):
-#   enp0s1  vzNAT       — internet egress (default route)
-#   enp0s2  socket_vmnet — private per-instance link to the agent VM
-#                           (IPs come from network.nix/network-local.nix)
+#   enp0s1  vfkit NAT        — internet egress (default route)
+#   enp0s2  private vfkit    — per-instance link to the agent VM
+#                               (IPs come from network.nix/network-local.nix)
 #
 # Hybrid filtering — HTTPS is intercepted, SSH is explicit, HTTP is denied:
 #
@@ -82,10 +82,9 @@ in
     networkConfig.DHCP = "ipv4";
   };
 
-  # enp0s2 = socket_vmnet, our private link to the agent VM. (The kernel
-  # names this NIC enp0s2 via systemd predictable naming because it's
-  # the second virtio-net device — Lima's `interface:` field can't
-  # actually rename the kernel device, so we just use enp0s2 directly.)
+  # enp0s2 = private vfkit link to the agent VM. The kernel names this NIC
+  # enp0s2 via systemd predictable naming because it is the second virtio-net
+  # device.
   # Static address; DHCP would conflict with the agent's static .2.
   systemd.network.networks."20-enp0s2" = {
     matchConfig.Name = "enp0s2";
@@ -107,8 +106,8 @@ in
 
   # ── Firewall ──────────────────────────────────────────────────────────
   # NixOS firewall manages the filter table. We add a separate nat table
-  # below for the REDIRECT rules. Inbound on enp0s2 (the socket_vmnet link
-  # to the agent VM) is allowed only on the explicit-mitmproxy port
+  # below for the REDIRECT rules. Inbound on enp0s2 (the private link to the
+  # agent VM) is allowed only on the explicit-mitmproxy port
   # (8080), the transparent-mitmproxy port (8081, which is the
   # post-REDIRECT destination), and dnsmasq (53).
   networking.nftables.enable = true;
@@ -148,9 +147,9 @@ in
   };
 
   # ── Mutable allowlist directory ───────────────────────────────────────
-  # `./rootcell allow` writes here via `limactl cp`, which connects as the
-  # unprivileged Lima guest user — so the dir is owned by ${username},
-  # not root. The dnsmasq-allowlist.conf seed is empty: dnsmasq's
+  # `./rootcell allow` writes here over SSH as ${username}, so the dir is owned
+  # by ${username}, not root. The dnsmasq-allowlist.conf seed is empty:
+  # dnsmasq's
   # pre-start check refuses to launch without the conf-file existing,
   # but with `no-resolv` and no `server=` directives, an empty
   # conf-file means every query returns REFUSED — fail-closed by
@@ -160,13 +159,12 @@ in
   # can overwrite root-owned files in a user-owned directory.
   #
   # The CA pem (key + cert) for TLS MITM is staged here too, but
-  # written by `./rootcell` via `limactl cp /tmp + sudo install -m 0600
-  # -o root -g root` — never touchable by the lima user (who has
-  # passwordless sudo, but the explicit ownership chmod makes the
-  # blast radius "must already be root" rather than "any read of
-  # /etc/agent-vm leaks the key"). Loaded into the mitmproxy services
-  # via systemd LoadCredential, which surfaces it as a tmpfs file
-  # readable only by the service uid.
+  # written by `./rootcell` via SCP to /tmp plus `sudo install -m 0600 -o root
+  # -g root` — never touchable by the normal guest user. That user has
+  # passwordless sudo, but the explicit ownership chmod makes the blast radius
+  # "must already be root" rather than "any read of /etc/agent-vm leaks the
+  # key". Loaded into the mitmproxy services via systemd LoadCredential, which
+  # surfaces it as a tmpfs file readable only by the service uid.
   systemd.tmpfiles.rules = [
     "d /etc/agent-vm 0755 ${username} users -"
     "f /etc/agent-vm/dnsmasq-allowlist.conf 0644 root root -"
@@ -215,9 +213,9 @@ in
   #
   # ConditionPathExists guards the bootstrap window: on the very first
   # nixos-rebuild the CA is not yet copied in (./rootcell does that AFTER
-  # rebuild — we can't `limactl cp` to /etc/agent-vm/ before tmpfiles
-  # creates the dir), so the services skip cleanly. ./rootcell then pushes
-  # the CA and `systemctl restart`s, which re-evaluates the condition.
+  # rebuild — we can't copy into /etc/agent-vm/ before tmpfiles creates the
+  # dir), so the services skip cleanly. ./rootcell then pushes the CA and
+  # `systemctl restart`s, which re-evaluates the condition.
   systemd.services.mitmproxy-explicit = {
     description = "mitmproxy (explicit CONNECT — for SSH ProxyCommand)";
     after = [ "network-online.target" ];

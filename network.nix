@@ -13,16 +13,14 @@
 
 let
   defaults = {
-    # IP of the firewall VM on the inter-VM socket_vmnet network. The
-    # agent VM uses this as its default route, DNS server, and SSH proxy.
+    # IP of the firewall VM on the private inter-VM network. The agent VM uses
+    # this as its default route, DNS server, and SSH proxy.
     #
-    # NOTE: do not put either VM at the .1 of the subnet. Apple's
-    # Keep .1 free. vmnet.framework may reserve that address for the host
-    # side of host-mode networks, and using it in the firewall VM creates
-    # confusing ARP and connection behavior.
+    # Keep .1 free for host-side or control-plane addresses if the private link
+    # implementation changes later.
     firewallIp = "192.168.100.2";
 
-    # IP of the agent VM on the same network.
+    # IP of the agent VM on the same private network.
     agentIp = "192.168.100.3";
 
     # Subnet prefix length for the inter-VM network.

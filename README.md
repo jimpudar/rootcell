@@ -31,7 +31,7 @@ rootcell gives you a local workspace where an agent can exercise root inside the
 VM without receiving broad access to your Mac:
 
 - A fresh NixOS VM for the agent's shell and tools.
-- No default host-home mount from Lima.
+- No host-home mount in the agent VM.
 - A separate firewall VM with the only public internet route.
 - DNS, HTTPS, and SSH allowlists you can review and hot-reload.
 - A per-VM SSH key for Git pushes.
@@ -62,7 +62,7 @@ The two VMs have different jobs:
 Rootcell supports named instances. Plain `./rootcell` uses the `default`
 instance and creates VMs named `agent` and `firewall`. `./rootcell --instance
 dev` creates `agent-dev` and `firewall-dev`, with separate CA material,
-allowlists, Keychain mappings, and a separate vmnet network.
+allowlists, Keychain mappings, and a separate private VM link.
 
 HTTPS egress is transparent from inside the agent VM. A normal command like
 `curl https://github.com` either works because the host is allowlisted, or fails
@@ -112,23 +112,13 @@ First run downloads compatible rootcell VM images from the configured release
 manifest, creates instance-local vfkit disks, and provisions the VMs. Later runs
 normally take seconds.
 
-### VM Provider Selection
+### Host Runtime
 
-vfkit is the default VM provider:
+vfkit is the supported VM runtime:
 
 ```bash
 ./rootcell
 ```
-
-The Lima provider remains as a rollback path while vfkit support settles:
-
-```bash
-ROOTCELL_VM_PROVIDER=lima ./rootcell
-```
-
-The legacy Lima path still requires the one-time `socket_vmnet` and
-`rootcell-vmnet` sudo setup printed by `./rootcell` when that provider is
-selected.
 
 Image resolution is controlled by:
 
@@ -282,8 +272,6 @@ common.nix               shared NixOS config for both VMs
 agent-vm.nix             agent VM network and trust-store config
 firewall-vm.nix          firewall VM services and nftables rules
 home.nix                 pi, Git, SSH, and developer tools for the agent VM
-nixos.yaml               Lima config for the agent VM
-firewall.yaml            Lima config for the firewall VM
 network.nix              default inter-VM network settings
 .env.defaults            seed values for per-instance `.env`
 secrets.env.defaults     seed Keychain secret mappings for per-instance `secrets.env`
@@ -293,7 +281,6 @@ proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
 pi/agent/                global pi instructions, skills, and extensions
 completions/             bash and zsh completion for `rootcell`
-pkgs/socket_vmnet.nix    local package for Lima's vmnet helper
 ```
 
 ## VM Lifecycle
@@ -302,36 +289,6 @@ vfkit instance state lives under `.rootcell/instances/<name>/vfkit/`. The host
 control key and generated SSH config live under `.rootcell/instances/<name>/ssh/`.
 The agent VM is reached through SSH ProxyJump via the firewall VM; no VSOCK
 device is attached on the vfkit path.
-
-### Lima Rollback
-
-The commands below apply to the legacy Lima provider when run with
-`ROOTCELL_VM_PROVIDER=lima`.
-
-Stop the VMs but keep their disks and Nix store caches:
-
-```bash
-limactl stop agent
-limactl stop firewall
-./rootcell
-
-limactl stop agent-dev firewall-dev
-./rootcell --instance dev
-```
-
-Delete the VMs for a clean slate:
-
-```bash
-limactl delete agent firewall --force
-./rootcell
-
-limactl delete agent-dev firewall-dev --force
-./rootcell --instance dev
-```
-
-If you edit `nixos.yaml` or `firewall.yaml`, Lima will not apply those changes
-to existing VMs automatically. Either run `limactl edit <name>` or delete and
-recreate the VM.
 
 ## Configuration
 
@@ -347,10 +304,10 @@ ROOTCELL_SUBNET_POOL_END=192.168.254.0
 ```
 
 The first run also writes `.rootcell/instances/<name>/state.json` with the
-instance's vmnet UUID and allocated `/24`. By default, rootcell chooses the first
-free subnet from `192.168.100.0/24` through `192.168.254.0/24`, uses `.2` for
-the firewall, and uses `.3` for the agent. Existing state is not recalculated if
-you later edit the pool values.
+instance's allocated `/24`. By default, rootcell chooses the first free subnet
+from `192.168.100.0/24` through `192.168.254.0/24`, uses `.2` for the firewall,
+and uses `.3` for the agent. Existing state is not recalculated if you later
+edit the pool values.
 
 To pin a new instance to a specific subnet before first run, set both IPs in
 that instance's `.env`:
@@ -421,20 +378,12 @@ Named instances are isolated from each other:
 ```
 
 Each instance gets its own VMs, state directory, CA, allowlists, Keychain mapping
-file, control SSH key, private-link sockets, and `/24`.
+file, control SSH key, private-link state, and `/24`.
 
 The `default` instance migrates from legacy repo-local files on first run: if
 `.env`, `secrets.env`, `proxy/allowed-*.txt`, or `pki/` already exist, rootcell
 copies them into `.rootcell/instances/default/`. Named instances seed from the
 checked-in defaults.
-
-Existing VMs created by the legacy Lima provider are not migrated in place. Use
-the Lima rollback provider to delete them if needed:
-
-```bash
-limactl delete agent firewall --force
-./rootcell
-```
 
 ## Troubleshooting
 

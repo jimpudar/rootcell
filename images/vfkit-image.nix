@@ -5,8 +5,6 @@
     (modulesPath + "/virtualisation/disk-image.nix")
   ];
 
-  rootcell.limaGuestSupport = false;
-
   image = {
     format = "raw";
     efiSupport = true;

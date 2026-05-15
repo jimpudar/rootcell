@@ -80,10 +80,6 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
     firewallIp: instance.state.firewallIp,
     agentIp: instance.state.agentIp,
     networkPrefix: String(instance.state.networkPrefix),
-    vmnetUuid: instance.state.vmnetUuid,
-    vmnetSocketPath: instance.state.socketPath,
-    vmnetPidPath: instance.state.pidPath,
-    vmStartTimeout: env.VM_START_TIMEOUT ?? "180s",
     imageManifestUrl: env.ROOTCELL_IMAGE_MANIFEST_URL ?? DEFAULT_IMAGE_MANIFEST_URL,
     ...(env.ROOTCELL_IMAGE_DIR === undefined || env.ROOTCELL_IMAGE_DIR.length === 0 ? {} : { imageDir: env.ROOTCELL_IMAGE_DIR }),
   };
@@ -394,8 +390,7 @@ exit 1
   }
 
   private nixosConfiguration(role: "agent" | "firewall"): string {
-    const base = role === "agent" ? "agent-vm" : "firewall-vm";
-    return this.providers.vm.id === "vfkit" ? `${base}-vfkit` : base;
+    return role === "agent" ? "agent-vm" : "firewall-vm";
   }
 
   private hostTimeZone(): string {

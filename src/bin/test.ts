@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { runCapture, runInherited } from "../rootcell/process.ts";
+import { runCapture } from "../rootcell/process.ts";
 
 const REPO_DIR = findRepoDir(import.meta.path);
 const TEST_INSTANCE = "test";
@@ -9,7 +9,6 @@ const AGENT_VM_NAME = "agent-test";
 const FIREWALL_VM_NAME = "firewall-test";
 const FIREWALL_IP = "192.168.109.2";
 const AGENT_IP = "192.168.109.3";
-const VM_PROVIDER = process.env.ROOTCELL_VM_PROVIDER ?? "vfkit";
 
 interface TestCase {
   readonly name: string;
@@ -78,41 +77,22 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function limactl(args: readonly string[]): string {
-  return commandOk("limactl", args);
-}
-
 function agentSh(script: string): string {
-  if (VM_PROVIDER === "vfkit") {
-    return sshGuest("rootcell-agent", script);
-  }
-  return limactl(["shell", AGENT_VM_NAME, "--", "bash", "-lc", script]);
+  return sshGuest("rootcell-agent", script);
 }
 
 function agentShCapture(script: string): ReturnType<typeof runCapture> {
-  if (VM_PROVIDER === "vfkit") {
-    return runCapture("ssh", ["-F", sshConfigPath(), "rootcell-agent", `bash -lc ${shellQuote(script)}`], {
-      allowFailure: true,
-    });
-  }
-  return runCapture("limactl", ["shell", AGENT_VM_NAME, "--", "bash", "-lc", script], {
+  return runCapture("ssh", ["-F", sshConfigPath(), "rootcell-agent", `bash -lc ${shellQuote(script)}`], {
     allowFailure: true,
   });
 }
 
 function firewallSh(script: string): string {
-  if (VM_PROVIDER === "vfkit") {
-    return sshGuest("rootcell-firewall", script);
-  }
-  return limactl(["shell", FIREWALL_VM_NAME, "--", "bash", "-lc", script]);
+  return sshGuest("rootcell-firewall", script);
 }
 
 function agentShFails(script: string): void {
-  if (VM_PROVIDER === "vfkit") {
-    commandFails("ssh", ["-F", sshConfigPath(), "rootcell-agent", `bash -lc ${shellQuote(script)}`]);
-    return;
-  }
-  commandFails("limactl", ["shell", AGENT_VM_NAME, "--", "bash", "-lc", script]);
+  commandFails("ssh", ["-F", sshConfigPath(), "rootcell-agent", `bash -lc ${shellQuote(script)}`]);
 }
 
 function sshGuest(alias: "rootcell-agent" | "rootcell-firewall", script: string): string {
@@ -192,66 +172,18 @@ function vfkitVmIsRunning(name: string): void {
   }
 }
 
-function yamlHasOverVsock(path: string): boolean {
-  const lines = readFileSync(path, "utf8").split(/\r?\n/);
-  let inSsh = false;
-  for (const line of lines) {
-    if (line.startsWith("ssh:")) {
-      inSsh = true;
-      continue;
-    }
-    if (inSsh && /^[^ \t#]/.test(line)) {
-      inSsh = false;
-    }
-    if (inSsh && /^[ \t]+overVsock:[ \t]+true[ \t]*$/.test(line)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function limaInstanceHasOverVsock(name: string): void {
-  const out = limactl(["list", name, "--json"]);
-  if (!out.includes('"overVsock":true')) {
-    throw new TestFailure("overVsock was not true");
-  }
-}
-
-function checkedInYamlsHaveOverVsock(): void {
-  if (!yamlHasOverVsock(join(REPO_DIR, "nixos.yaml")) || !yamlHasOverVsock(join(REPO_DIR, "firewall.yaml"))) {
-    throw new TestFailure("checked-in Lima YAML is missing ssh.overVsock: true");
-  }
-}
-
 function syncDefaultAllowlists(): void {
   log("syncing .defaults allowlists into test firewall...");
-  if (VM_PROVIDER === "vfkit") {
-    const proxyDir = join(REPO_DIR, ".rootcell", "instances", TEST_INSTANCE, "proxy");
-    mkdirSync(proxyDir, { recursive: true, mode: 0o700 });
-    for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
-      copyFileSync(join(REPO_DIR, "proxy", `${file}.defaults`), join(proxyDir, file));
-    }
-    commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "allow"]);
-    return;
-  }
+  const proxyDir = join(REPO_DIR, ".rootcell", "instances", TEST_INSTANCE, "proxy");
+  mkdirSync(proxyDir, { recursive: true, mode: 0o700 });
   for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
-    limactl([
-      "cp",
-      join(REPO_DIR, "proxy", `${file}.defaults`),
-      `${FIREWALL_VM_NAME}:/etc/agent-vm/${file}`,
-    ]);
+    copyFileSync(join(REPO_DIR, "proxy", `${file}.defaults`), join(proxyDir, file));
   }
-  runInherited("limactl", ["shell", FIREWALL_VM_NAME, "--", "sudo", "/etc/agent-vm/reload.sh"], {
-    ignoredOutput: true,
-  });
+  commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "allow"]);
 }
 
 function agentRestartsViaWrapper(): void {
-  if (VM_PROVIDER === "vfkit") {
-    stopVfkitVm(AGENT_VM_NAME);
-  } else {
-    limactl(["stop", AGENT_VM_NAME]);
-  }
+  stopVfkitVm(AGENT_VM_NAME);
   commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "provision"]);
   syncDefaultAllowlists();
   agentSh("true");
@@ -330,17 +262,6 @@ function vfkitCases(): TestCase[] {
   ];
 }
 
-function limaCases(): TestCase[] {
-  return [
-    { name: "checked-in Lima YAMLs force SSH over VSOCK", run: checkedInYamlsHaveOverVsock },
-    { name: "agent VM is Running", run: () => commandOk("bash", ["-c", `[ "$(limactl list --format '{{.Status}}' ${AGENT_VM_NAME})" = Running ]`]) },
-    { name: "firewall VM is Running", run: () => commandOk("bash", ["-c", `[ "$(limactl list --format '{{.Status}}' ${FIREWALL_VM_NAME})" = Running ]`]) },
-    { name: "agent Lima config has ssh.overVsock enabled", run: () => { limaInstanceHasOverVsock(AGENT_VM_NAME); } },
-    { name: "firewall Lima config has ssh.overVsock enabled", run: () => { limaInstanceHasOverVsock(FIREWALL_VM_NAME); } },
-    { name: "agent Lima user has lingering enabled", run: () => agentSh('loginctl show-user "$USER" -p Linger | grep -q Linger=yes') },
-  ];
-}
-
 function sharedCases(): TestCase[] {
   return [
     { name: "agent restarts via ./rootcell after locked-down networking", run: agentRestartsViaWrapper },
@@ -349,11 +270,11 @@ function sharedCases(): TestCase[] {
     { name: "agent spy tui flags parse with help", run: () => commandOk("bash", ["-c", `'${join(REPO_DIR, "rootcell")}' --instance ${TEST_INSTANCE} spy --tui --raw --no-dedupe --help | grep -q -- '--tui'`]) },
     { name: "firewall spy formatter installed", run: () => firewallSh('test -x /etc/agent-vm/agent_spy.py && test -x /etc/agent-vm/agent_spy_tui.py && command -v python3 >/dev/null && python3 -c "import textual" && test -d /run/agent-vm-spy') },
     { name: "agent VM has test IP on enp0s1", run: () => agentSh(`ip -4 -o addr show enp0s1 | grep -q '${AGENT_IP}/'`) },
-    { name: "agent VM has no default Lima usernet NIC", run: () => agentSh("! ip link show enp0s2 >/dev/null 2>&1") },
+    { name: "agent VM has no second virtio-net NIC", run: () => agentSh("! ip link show enp0s2 >/dev/null 2>&1") },
     { name: "agent VM routes default traffic through firewall", run: () => agentSh(`ip route show default | grep -q '^default via ${FIREWALL_IP} dev enp0s1'`) },
     { name: "agent VM has no direct usernet address", run: () => agentSh("! ip -4 -o addr show | grep -q '192\\.168\\.5\\.'") },
     { name: "firewall VM has test IP on enp0s2", run: () => firewallSh(`ip -4 -o addr show enp0s2 | grep -q '${FIREWALL_IP}/'`) },
-    { name: "agent reaches firewall dnsmasq on private VMNET link", run: () => agentSh(`dig @${FIREWALL_IP} +short +time=5 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'`) },
+    { name: "agent reaches firewall dnsmasq on private link", run: () => agentSh(`dig @${FIREWALL_IP} +short +time=5 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'`) },
     { name: "home-manager dev CLIs on PATH", run: () => agentSh("command -v pi && command -v rg && command -v gh && command -v jq >/dev/null") },
     { name: "pi --help runs", run: () => agentSh('out=$(pi --help) && [ -n "$out" ]') },
     { name: "HTTPS allowed: github.com", run: () => agentSh('code=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com) && [[ "$code" =~ ^[23] ]]') },
@@ -373,13 +294,7 @@ function sharedCases(): TestCase[] {
 }
 
 function buildCases(): TestCase[] {
-  if (VM_PROVIDER === "vfkit") {
-    return [...vfkitCases(), ...sharedCases()];
-  }
-  if (VM_PROVIDER === "lima") {
-    return [...limaCases(), ...sharedCases()];
-  }
-  throw new TestFailure(`unsupported ROOTCELL_VM_PROVIDER '${VM_PROVIDER}'`);
+  return [...vfkitCases(), ...sharedCases()];
 }
 
 function runCase(testCase: TestCase): boolean {
@@ -398,9 +313,7 @@ function runCase(testCase: TestCase): boolean {
 }
 
 function removeTestInstanceState(): void {
-  if (VM_PROVIDER === "vfkit") {
-    stopVfkitInstance();
-  }
+  stopVfkitInstance();
   rmSync(join(REPO_DIR, ".rootcell", "instances", TEST_INSTANCE), {
     recursive: true,
     force: true,
@@ -415,31 +328,17 @@ function main(args: readonly string[]): number {
 
   if (parsed.teardown) {
     log("deleting test VMs...");
-    if (VM_PROVIDER === "vfkit") {
-      stopVfkitInstance();
-    } else {
-      runInherited("limactl", ["delete", "-f", AGENT_VM_NAME, FIREWALL_VM_NAME], {
-        allowFailure: true,
-        ignoredOutput: true,
-      });
-    }
+    stopVfkitInstance();
     removeTestInstanceState();
     return 0;
   }
   if (parsed.clean) {
     log("deleting test VMs for a fresh provision...");
-    if (VM_PROVIDER === "vfkit") {
-      stopVfkitInstance();
-    } else {
-      runInherited("limactl", ["delete", "-f", AGENT_VM_NAME, FIREWALL_VM_NAME], {
-        allowFailure: true,
-        ignoredOutput: true,
-      });
-    }
+    stopVfkitInstance();
     removeTestInstanceState();
   }
 
-  log(`provisioning ${VM_PROVIDER} test VMs (first run takes ~15 min)...`);
+  log("provisioning vfkit test VMs (first run takes ~15 min)...");
   commandOk(join(REPO_DIR, "rootcell"), ["--instance", TEST_INSTANCE, "provision"]);
   syncDefaultAllowlists();
   log("running tests...");

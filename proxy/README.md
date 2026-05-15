@@ -125,24 +125,27 @@ Plain hostnames (no globs). dnsmasq matches as a suffix, so listing
 
 ```bash
 # What's the firewall VM logging?
-limactl shell firewall -- journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
 
 # What is the agent sending to Bedrock?
 ./rootcell spy
 ./rootcell spy --tui
 
 # Is mitmproxy listening on both ports?
-limactl shell firewall -- ss -tln '( sport = :8080 or sport = :8081 )'
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  "ss -tln '( sport = :8080 or sport = :8081 )'"
 
 # Is the NAT REDIRECT rule loaded?
-limactl shell firewall -- sudo nft list table ip agent-vm-nat
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  sudo nft list table ip agent-vm-nat
 
 # What's the agent VM seeing?
 ./rootcell -- curl -v https://example.com 2>&1 | head -20
 
 # Allowlist content currently inside the VM:
-limactl shell firewall -- cat /etc/agent-vm/allowed-https.txt
-limactl shell firewall -- cat /etc/agent-vm/dnsmasq-allowlist.conf
+ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+  "cat /etc/agent-vm/allowed-https.txt && cat /etc/agent-vm/dnsmasq-allowlist.conf"
 ```
 
 ## Files in this directory

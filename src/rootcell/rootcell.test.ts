@@ -6,8 +6,6 @@ import { buildConfig } from "./rootcell.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import { limaListJsonContainsSocket, limaStatusFromOutput } from "./providers/lima.ts";
-import { MacOsSocketVmnetNetworkProvider } from "./providers/macos-socket-vmnet.ts";
 import { macFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
 import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
 import {
@@ -142,13 +140,11 @@ describe("environment parsing", () => {
   });
 
   test("builds config from instance state", () => {
-    const config = buildConfig("/repo", { VM_START_TIMEOUT: "5s" }, fakeInstance("dev"));
+    const config = buildConfig("/repo", {}, fakeInstance("dev"));
     expect(config.agentVm).toBe("agent-dev");
     expect(config.firewallVm).toBe("firewall-dev");
     expect(config.firewallIp).toBe("192.168.109.2");
     expect(config.agentIp).toBe("192.168.109.3");
-    expect(config.vmnetSocketPath).toBe("/private/var/run/rootcell/501/dev.sock");
-    expect(config.vmStartTimeout).toBe("5s");
     expect(config.imageManifestUrl).toBe("https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json");
   });
 });
@@ -158,54 +154,6 @@ describe("VM and network providers", () => {
     const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
     expect(providers.network.id).toBe("macos-vfkit");
     expect(providers.vm.id).toBe("vfkit");
-  });
-
-  test("factory keeps Lima providers behind rollback env var", () => {
-    const old = process.env.ROOTCELL_VM_PROVIDER;
-    process.env.ROOTCELL_VM_PROVIDER = "lima";
-    try {
-      const providers = createProviderBundle(buildConfig("/repo", {}, fakeInstance("dev")), ignoreLog);
-      expect(providers.network.id).toBe("macos-socket-vmnet");
-      expect(providers.vm.id).toBe("lima");
-    } finally {
-      if (old === undefined) {
-        delete process.env.ROOTCELL_VM_PROVIDER;
-      } else {
-        process.env.ROOTCELL_VM_PROVIDER = old;
-      }
-    }
-  });
-
-  test("macOS socket vmnet provider exposes guest config and Lima attachments", () => {
-    const config = buildConfig("/repo", {}, fakeInstance("dev"));
-    const plan = new MacOsSocketVmnetNetworkProvider(config, ignoreLog).plan();
-    expect(plan).toEqual({
-      provider: "macos-socket-vmnet",
-      guest: {
-        firewallIp: "192.168.109.2",
-        agentIp: "192.168.109.3",
-        networkPrefix: 24,
-        agentPrivateInterface: "enp0s1",
-        firewallPrivateInterface: "enp0s2",
-        firewallEgressInterface: "enp0s1",
-      },
-      vms: {
-        agent: {
-          kind: "lima-socket",
-          socketPath: "/private/var/run/rootcell/501/dev.sock",
-          sshOverVsock: true,
-          disableDefaultUsernet: true,
-          useDefaultNat: false,
-        },
-        firewall: {
-          kind: "lima-socket",
-          socketPath: "/private/var/run/rootcell/501/dev.sock",
-          sshOverVsock: true,
-          disableDefaultUsernet: false,
-          useDefaultNat: true,
-        },
-      },
-    });
   });
 
   test("macOS vfkit provider exposes host-control and hostless-private attachments", () => {
@@ -331,30 +279,6 @@ describe("VM and network providers", () => {
     }
   });
 
-  test("Lima status output maps to provider-neutral VM states", () => {
-    expect(limaStatusFromOutput("")).toEqual({ state: "missing" });
-    expect(limaStatusFromOutput("Running\n")).toEqual({ state: "running" });
-    expect(limaStatusFromOutput("Stopped")).toEqual({ state: "stopped" });
-    expect(limaStatusFromOutput("Broken")).toEqual({ state: "unexpected", detail: "Broken" });
-  });
-
-  test("Lima socket compatibility parser finds nested socket attachments", () => {
-    const socketPath = "/private/var/run/rootcell/501/dev.sock";
-    const output = JSON.stringify([
-      {
-        name: "agent-dev",
-        config: {
-          networks: [
-            { socket: socketPath },
-          ],
-        },
-      },
-    ]);
-    expect(limaListJsonContainsSocket(output, socketPath)).toBe(true);
-    expect(limaListJsonContainsSocket(output, "/private/var/run/rootcell/501/other.sock")).toBe(false);
-    expect(limaListJsonContainsSocket(`{"socket":${JSON.stringify(socketPath)}`, socketPath)).toBe(true);
-  });
-
   test("vfkit state parser validates running state shape", () => {
     expect(parseVfkitVmState({
       provider: "vfkit",
@@ -369,7 +293,7 @@ describe("VM and network providers", () => {
       controlMac: "52:54:00:00:00:02",
       firewallControlIp: "192.168.64.2",
     }).firewallControlIp).toBe("192.168.64.2");
-    expect(() => parseVfkitVmState({ provider: "lima" })).toThrow("provider mismatch");
+    expect(() => parseVfkitVmState({ provider: "unknown" })).toThrow("provider mismatch");
   });
 
   test("macOS DHCP lease parser finds vfkit NAT IP by MAC", () => {
@@ -541,15 +465,6 @@ function stripTrailingBlankLine(text: string): string {
   return text.endsWith("\n\n") ? text.slice(0, -1) : text;
 }
 
-describe("Lima templates", () => {
-  test("checked-in Lima YAMLs use unmanaged socket networks", () => {
-    expect(readFileSync("nixos.yaml", "utf8")).toContain("socket:");
-    expect(readFileSync("firewall.yaml", "utf8")).toContain("socket:");
-    expect(readFileSync("nixos.yaml", "utf8")).not.toContain("lima: host");
-    expect(readFileSync("firewall.yaml", "utf8")).not.toContain("lima: host");
-  });
-});
-
 function fakeInstance(name: string): RootcellInstance {
   return {
     name,
@@ -562,13 +477,10 @@ function fakeInstance(name: string): RootcellInstance {
     statePath: `/repo/.rootcell/instances/${name}/state.json`,
     state: {
       schemaVersion: 1,
-      vmnetUuid: "00000000-0000-4000-8000-000000000001",
       subnet: "192.168.109.0",
       networkPrefix: 24,
       firewallIp: "192.168.109.2",
       agentIp: "192.168.109.3",
-      socketPath: `/private/var/run/rootcell/501/${name}.sock`,
-      pidPath: `/private/var/run/rootcell/501/${name}.pid`,
     },
   };
 }
@@ -587,13 +499,10 @@ function makeInstanceRepo(): string {
 function stateJson(name: string, prefix: string): string {
   return `${JSON.stringify({
     schemaVersion: 1,
-    vmnetUuid: "00000000-0000-4000-8000-000000000001",
     subnet: `${prefix}.0`,
     networkPrefix: 24,
     firewallIp: `${prefix}.2`,
     agentIp: `${prefix}.3`,
-    socketPath: `/private/var/run/rootcell/501/${name}.sock`,
-    pidPath: `/private/var/run/rootcell/501/${name}.pid`,
   }, null, 2)}\n`;
 }
 

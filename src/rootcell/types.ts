@@ -27,10 +27,6 @@ export interface RootcellConfig {
   readonly firewallIp: string;
   readonly agentIp: string;
   readonly networkPrefix: string;
-  readonly vmnetUuid: string;
-  readonly vmnetSocketPath: string;
-  readonly vmnetPidPath: string;
-  readonly vmStartTimeout: string;
   readonly imageManifestUrl: string;
   readonly imageDir?: string;
 }
@@ -52,13 +48,10 @@ export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledAr
 
 export interface InstanceState {
   readonly schemaVersion: 1;
-  readonly vmnetUuid: string;
   readonly subnet: string;
   readonly networkPrefix: 24;
   readonly firewallIp: string;
   readonly agentIp: string;
-  readonly socketPath: string;
-  readonly pidPath: string;
 }
 
 export interface RootcellInstance {

@@ -2,13 +2,7 @@
   description = "rootcell: root-capable coding-agent workspaces with allowlisted egress";
 
   inputs = {
-    # Must match what nixos-lima is built against. v0.0.5 = nixos-25.11.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-
-    nixos-lima = {
-      url = "github:nixos-lima/nixos-lima/master";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
 
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
@@ -16,7 +10,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, nixos-lima, home-manager, ... }:
+  outputs = { self, nixpkgs, home-manager, ... }:
     let
       # Apple Silicon hosts use aarch64-linux guests.
       # Switch to "x86_64-linux" if you're on an Intel Mac or x86 Linux host.
@@ -24,36 +18,25 @@
 
       # Username inside the guest. MUST agree with:
       #   - GUEST_USER in ./rootcell
-      #   - --set '.user.name = "<this>"' passed to limactl start
       username = "luser";
 
       pkgs = nixpkgs.legacyPackages.${system};
 
       mkVM = module: nixpkgs.lib.nixosSystem {
         inherit system;
-        # nixos-lima is referenced from common.nix; username from both.
-        specialArgs = { inherit username nixos-lima; };
+        specialArgs = { inherit username; };
         modules = [ module ];
       };
 
-      mkVfkitVM = module: nixpkgs.lib.nixosSystem {
+      mkImage = module: nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit username nixos-lima; };
-        modules = [
-          module
-          ({ ... }: { rootcell.limaGuestSupport = false; })
-        ];
-      };
-
-      mkVfkitImage = module: nixpkgs.lib.nixosSystem {
-        inherit system;
-        specialArgs = { inherit username nixos-lima; };
+        specialArgs = { inherit username; };
         modules = [ module ./images/vfkit-image.nix ];
       };
 
-      agentImage = (mkVfkitImage ./agent-vm.nix).config.system.build.image;
-      firewallImage = (mkVfkitImage ./firewall-vm.nix).config.system.build.image;
-      builderImage = (mkVfkitImage ./images/builder-vm.nix).config.system.build.image;
+      agentImage = (mkImage ./agent-vm.nix).config.system.build.image;
+      firewallImage = (mkImage ./firewall-vm.nix).config.system.build.image;
+      builderImage = (mkImage ./images/builder-vm.nix).config.system.build.image;
       rootcellSourceRevision = self.rev or self.dirtyRev or "unknown";
       nixpkgsRevision = nixpkgs.rev or "unknown";
 
@@ -87,30 +70,13 @@
 JSON
       '';
 
-      # Host-side packages. vfkit is the default macOS VM runtime; the
-      # patched Lima and socket_vmnet outputs remain as rollback support.
+      # Host-side packages. vfkit is the macOS VM runtime.
       forEachDarwin = nixpkgs.lib.genAttrs [ "aarch64-darwin" "x86_64-darwin" ];
       darwinPkgs = forEachDarwin (sys:
         let p = nixpkgs.legacyPackages.${sys};
         in {
-          lima = p.lima.overrideAttrs (old: rec {
-            version = "2.1.1";
-            src = p.fetchFromGitHub {
-              owner = "lima-vm";
-              repo = "lima";
-              rev = "v${version}";
-              hash = "sha256-U054xA3utBcSfpyvsZi4MvgJGNa7QyAYJf9usNXpgXg=";
-            };
-            vendorHash = "sha256-C4YCuFVXkL5vS6lWZCGkEeZQgAkP55buPDGZ/wvMnAA=";
-            patches = (old.patches or []) ++ [
-              ./patches/lima-vz-vsock-no-default-usernet.patch
-            ];
-            meta = old.meta // {
-              knownVulnerabilities = [];
-            };
-          });
           vfkit = p.vfkit;
-          socket_vmnet = p.callPackage ./pkgs/socket_vmnet.nix { };
+          zstd = p.zstd;
         });
     in
     {
@@ -119,11 +85,9 @@ JSON
       nixosConfigurations = {
         agent-vm    = mkVM ./agent-vm.nix;
         firewall-vm = mkVM ./firewall-vm.nix;
-        agent-vm-vfkit    = mkVfkitVM ./agent-vm.nix;
-        firewall-vm-vfkit = mkVfkitVM ./firewall-vm.nix;
-        agent-vm-vfkit-image    = mkVfkitImage ./agent-vm.nix;
-        firewall-vm-vfkit-image = mkVfkitImage ./firewall-vm.nix;
-        builder-vm-vfkit-image  = mkVfkitImage ./images/builder-vm.nix;
+        agent-vm-vfkit-image    = mkImage ./agent-vm.nix;
+        firewall-vm-vfkit-image = mkImage ./firewall-vm.nix;
+        builder-vm-vfkit-image  = mkImage ./images/builder-vm.nix;
       };
 
       # Home Manager only attaches to the agent VM. The firewall VM is an
@@ -137,10 +101,9 @@ JSON
       inherit rootcellSourceRevision nixpkgsRevision;
 
       packages = forEachDarwin (sys: {
-        lima         = darwinPkgs.${sys}.lima;
-        vfkit        = darwinPkgs.${sys}.vfkit;
-        socket_vmnet = darwinPkgs.${sys}.socket_vmnet;
-        default      = darwinPkgs.${sys}.vfkit;
+        vfkit   = darwinPkgs.${sys}.vfkit;
+        zstd    = darwinPkgs.${sys}.zstd;
+        default = darwinPkgs.${sys}.vfkit;
       }) // {
         aarch64-linux = {
           inherit agentImage firewallImage builderImage rootcellImages;

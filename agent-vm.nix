@@ -17,17 +17,16 @@ in
   # anyway. All meaningful filtering happens in the firewall VM.
   networking.firewall.enable = false;
 
-  # Networking: only the per-instance socket_vmnet interface is configured.
-  # The repo's patched Lima launcher skips the default usernet NIC for this
-  # VM, so the private socket_vmnet link is enp0s1 and there is no direct
-  # host usernet path a root-capable agent could reconfigure into egress.
+  # Networking: only the per-instance private vfkit link is configured, so
+  # there is no direct host control path a root-capable agent could reconfigure
+  # into egress.
   networking.useDHCP = false;
   networking.useNetworkd = true;
   systemd.network.enable = true;
   systemd.network.wait-online.enable = false;
-  # The private link from nixos.yaml/vfkit is enp0s1. Cloud-init performs a
-  # MAC-matched bootstrap before provisioning, then this NixOS config owns the
-  # steady-state interface.
+  # The private vfkit link is enp0s1. Cloud-init performs a MAC-matched
+  # bootstrap before provisioning, then this NixOS config owns the steady-state
+  # interface.
   systemd.network.networks."10-enp0s1" = {
     matchConfig.Name = "enp0s1";
     networkConfig = {

@@ -53,9 +53,9 @@ Prefer:
 Avoid leading with:
 
 - TLS MITM
-- socket_vmnet
+- VM runtime internals
 - NixOS module internals
-- Lima named-network details
+- provider-specific network details
 - provider-specific setup
 
 Those details matter, but they belong after the reader understands what the

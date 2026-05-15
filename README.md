@@ -133,15 +133,14 @@ selected.
 Image resolution is controlled by:
 
 ```bash
-ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/rootcell-ai/rootcell-images/releases/latest/download/manifest.json
+ROOTCELL_IMAGE_MANIFEST_URL=https://github.com/rootcell-ai/rootcell/releases/latest/download/manifest.json
 ROOTCELL_IMAGE_DIR=/path/to/local/rootcell-image-dist
 ```
 
 `ROOTCELL_IMAGE_DIR` must contain `manifest.json` plus the image files named in
 that manifest. Image build definitions now live in `images/` and are exposed by
-this repository's root flake. The default manifest URL still points at the
-existing `rootcell-images` release stream until an in-repo image release is
-published and promoted.
+this repository's root flake. The default manifest URL points at this
+repository's GitHub Release assets.
 
 ## Daily Workflow
 

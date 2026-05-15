@@ -57,7 +57,7 @@
       rootcellSourceRevision = self.rev or self.dirtyRev or "unknown";
       nixpkgsRevision = nixpkgs.rev or "unknown";
 
-      rootcellImages = pkgs.runCommand "rootcell-images" { nativeBuildInputs = [ pkgs.coreutils pkgs.zstd ]; } ''
+      rootcellImages = pkgs.runCommand "rootcell-image-assets" { nativeBuildInputs = [ pkgs.coreutils pkgs.zstd ]; } ''
         mkdir -p "$out"
         cp ${agentImage}/*.img "$out/agent.raw"
         cp ${firewallImage}/*.img "$out/firewall.raw"

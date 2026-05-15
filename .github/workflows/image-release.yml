@@ -21,7 +21,7 @@ concurrency:
 jobs:
   release:
     name: Build and publish image assets
-    runs-on: blacksmith-16vcpu-ubuntu-2404-arm
+    runs-on: [linux, arm64, kvm]
     timeout-minutes: 180
 
     steps:

@@ -3,8 +3,8 @@ import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
-import { buildConfig } from "./rootcell.ts";
-import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import { buildConfig, formatVmList } from "./rootcell.ts";
+import { deriveVmNames, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import { getMacAddressFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
@@ -35,6 +35,30 @@ describe("rootcell argument parsing", () => {
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
     expect(() => parseRootcellArgs(["provision", "ignored"])).toThrow("Too many non-option arguments");
+  });
+
+  test("parses lifecycle subcommands", () => {
+    expect(runArgs(["list"])).toEqual({
+      kind: "run",
+      instanceName: "default",
+      subcommand: "list",
+      rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+    expect(runArgs(["stop", "--instance", "dev"])).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "stop",
+      rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
+    expect(runArgs(["remove", "--instance=dev"])).toEqual({
+      kind: "run",
+      instanceName: "dev",
+      subcommand: "remove",
+      rest: [],
+      spyOptions: { raw: false, dedupe: true, tui: false },
+    });
   });
 
   test("parses pass-through guest commands", () => {
@@ -367,6 +391,19 @@ describe("VM and network providers", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("formats VM state list", () => {
+    expect(formatVmList([
+      { instance: "default", vm: "agent", state: "running" },
+      { instance: "dev", vm: "firewall-dev", state: "stopped" },
+    ])).toBe([
+      "INSTANCE  VM            STATE",
+      "default   agent         running",
+      "dev       firewall-dev  stopped",
+      "",
+    ].join("\n"));
+    expect(formatVmList([])).toBe("No rootcell VMs found.\n");
+  });
 });
 
 describe("rootcell image manifest contract", () => {
@@ -453,6 +490,20 @@ describe("instance state", () => {
       writeFileSync(join(repo, ".rootcell/instances/default/state.json"), stateJson("default", "192.168.100"), "utf8");
       writeFileSync(join(repo, ".rootcell/instances/dev/state.json"), stateJson("dev", "192.168.100"), "utf8");
       expect(() => loadRootcellInstance(repo, "default", {})).toThrow("allocated to multiple rootcell instances");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("lists only instances with vfkit VM state", () => {
+    const repo = makeInstanceRepo();
+    try {
+      mkdirSync(join(repo, ".rootcell/instances/default"), { recursive: true });
+      mkdirSync(join(repo, ".rootcell/instances/dev/vfkit/agent-dev"), { recursive: true });
+      writeFileSync(join(repo, ".rootcell/instances/default/state.json"), stateJson("default", "192.168.100"), "utf8");
+      writeFileSync(join(repo, ".rootcell/instances/dev/state.json"), stateJson("dev", "192.168.101"), "utf8");
+
+      expect(listRootcellVmInstanceNames(repo)).toEqual(["dev"]);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

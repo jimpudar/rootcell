@@ -176,7 +176,7 @@ export function sshConfig(input: {
 function remoteCommand(command: readonly string[], options: ExecOptions): string {
   const full = options.env === undefined || options.env.length === 0
     ? command
-    : ["env", ...options.env, "--", ...command];
+    : ["env", ...options.env, ...command];
   return full.map(shellQuote).join(" ");
 }
 

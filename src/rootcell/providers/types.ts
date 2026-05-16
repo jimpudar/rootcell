@@ -32,6 +32,8 @@ export interface NetworkProvider<TAttachment extends VmNetworkAttachment = VmNet
   readonly id: string;
   plan(): NetworkPlan<TAttachment>;
   preflight(): Promise<void>;
+  stop(): Promise<void>;
+  remove(): Promise<void>;
   ensureReady(input: {
     readonly affectedVms: readonly string[];
     readonly stopVmIfRunning: (name: string) => Promise<void>;
@@ -52,6 +54,7 @@ export interface VmProvider<TAttachment extends VmNetworkAttachment = VmNetworkA
   readonly id: string;
   status(name: string): Promise<VmStatus>;
   forceStopIfRunning(name: string): Promise<void>;
+  remove(name: string): Promise<void>;
   assertCompatible(name: string, network: TAttachment): Promise<void>;
   ensureRunning(input: {
     readonly role: VmRole;

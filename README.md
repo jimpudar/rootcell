@@ -187,6 +187,9 @@ repository's GitHub Release assets.
 ./rootcell allow                  # reload network allowlists after editing them
 ./rootcell provision              # rebuild/re-provision after VM Nix or pi config edits
 ./rootcell pubkey                 # print the agent VM's SSH public key
+./rootcell list                   # list rootcell VMs and their current state
+./rootcell stop --instance dev    # stop the dev instance VMs
+./rootcell remove --instance dev  # stop dev and delete its VM state
 ./rootcell spy                    # tail formatted Bedrock Runtime traffic
 ./rootcell spy --raw              # include sanitized raw JSON bodies too
 ./rootcell spy --tui              # browse Bedrock Runtime traffic interactively
@@ -335,6 +338,13 @@ vfkit instance state lives under `.rootcell/instances/<name>/vfkit/`. The host
 control key and generated SSH config live under `.rootcell/instances/<name>/ssh/`.
 The agent VM is reached through SSH ProxyJump via the firewall VM; no VSOCK
 device is attached on the vfkit path.
+
+Use `./rootcell list` to show known VMs and their state. `./rootcell stop`
+stops the selected instance's VMs, and `./rootcell remove` stops the selected
+instance and deletes its vfkit VM state. Instance-local configuration such as
+allowlists, Keychain mappings, CA files, and subnet allocation remains in
+`.rootcell/instances/<name>/` so the next start keeps the same instance
+settings.
 
 ## Configuration
 

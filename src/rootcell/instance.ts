@@ -95,6 +95,38 @@ export function loadRootcellInstance(repoDir: string, instanceName: string, env:
   mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.generatedDir, { recursive: true, mode: 0o700 });
   const state = ensureInstanceState(repoDir, paths, env);
+  return rootcellInstanceFromPaths(paths, state);
+}
+
+export function loadExistingRootcellInstance(repoDir: string, instanceName: string): RootcellInstance | null {
+  const paths = instancePaths(repoDir, instanceName);
+  if (!existsSync(paths.statePath)) {
+    return null;
+  }
+  return rootcellInstanceFromPaths(paths, readState(paths.name, paths.statePath));
+}
+
+export function listRootcellVmInstanceNames(repoDir: string): readonly string[] {
+  const root = join(repoDir, ".rootcell", "instances");
+  if (!existsSync(root)) {
+    return [];
+  }
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && INSTANCE_NAME_RE.test(entry.name))
+    .map((entry) => entry.name)
+    .filter((name) => instanceHasVmState(repoDir, name))
+    .sort();
+}
+
+function instanceHasVmState(repoDir: string, instanceName: string): boolean {
+  const paths = instancePaths(repoDir, instanceName);
+  const vmNames = deriveVmNames(instanceName);
+  return existsSync(join(paths.dir, "vfkit", vmNames.agentVm))
+    || existsSync(join(paths.dir, "vfkit", vmNames.firewallVm))
+    || existsSync(join(paths.dir, "vfkit", "network"));
+}
+
+function rootcellInstanceFromPaths(paths: InstancePaths, state: InstanceState): RootcellInstance {
   return parseSchema(RootcellInstanceSchema, {
     name: paths.name,
     dir: paths.dir,

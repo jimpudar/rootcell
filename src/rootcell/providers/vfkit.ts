@@ -59,18 +59,26 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
     return Promise.resolve({ state: "missing" });
   }
 
-  forceStopIfRunning(name: string): Promise<void> {
+  async forceStopIfRunning(name: string): Promise<void> {
     const state = this.readVmState(name);
     if (state === null || !processIsRunning(state.pid)) {
-      return Promise.resolve();
+      return;
     }
     this.log(`stopping ${name} vfkit VM...`);
-    try {
-      process.kill(state.pid, "TERM");
-    } catch {
-      return Promise.resolve();
+    this.requestStateChange(state, "Stop");
+    if (await waitForProcessExit(state.pid, 600, 100)) {
+      return;
     }
-    return Promise.resolve();
+    this.requestStateChange(state, "HardStop");
+    if (await waitForProcessExit(state.pid, 100, 100)) {
+      return;
+    }
+    await terminateProcess(state.pid);
+  }
+
+  async remove(name: string): Promise<void> {
+    await this.forceStopIfRunning(name);
+    rmSync(this.vmDir(name), { recursive: true, force: true });
   }
 
   assertCompatible(name: string, network: VfkitNetworkAttachment): Promise<void> {
@@ -227,6 +235,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
 
   private async waitForSsh(name: string): Promise<void> {
     for (let attempt = 0; attempt < 300; attempt += 1) {
+      this.refreshFirewallControlIp(name);
       const result = await this.transport.exec(name, ["true"], {
         allowFailure: true,
         ignoredOutput: true,
@@ -244,17 +253,27 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
       throw new Error("firewall vfkit VM is missing a control MAC");
     }
     for (let attempt = 0; attempt < 120; attempt += 1) {
-      const leaseIp = lookupDhcpLease(network.controlMac, undefined, "firewall-vm");
-      if (leaseIp !== null && arpHasIpForMac(leaseIp, network.controlMac)) {
-        return leaseIp;
-      }
-      const arpIp = lookupArpIpByMac(network.controlMac);
-      if (arpIp !== null) {
-        return arpIp;
+      const ip = currentFirewallControlIp(network.controlMac);
+      if (ip !== null) {
+        return ip;
       }
       Bun.sleepSync(500);
     }
     throw new Error(`timeout waiting for DHCP lease for firewall control MAC ${network.controlMac}`);
+  }
+
+  private refreshFirewallControlIp(name: string): void {
+    if (name !== this.config.firewallVm) {
+      return;
+    }
+    const state = this.readVmState(name);
+    if (state?.controlMac === undefined) {
+      return;
+    }
+    const ip = currentFirewallControlIp(state.controlMac);
+    if (ip !== null && ip !== state.firewallControlIp) {
+      this.writeVmState(name, { ...state, firewallControlIp: ip });
+    }
   }
 
   private transportEndpoints(): ProxyJumpSshEndpoints {
@@ -285,6 +304,27 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
 
   private writeVmState(name: string, state: VfkitVmState): void {
     writeFileSync(this.statePath(name), `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  }
+
+  private requestStateChange(state: VfkitVmState, newState: "Stop" | "HardStop"): void {
+    if (!existsSync(state.restSocketPath)) {
+      return;
+    }
+    runCapture("curl", [
+      "--silent",
+      "--show-error",
+      "--max-time",
+      "5",
+      "--unix-socket",
+      state.restSocketPath,
+      "-X",
+      "POST",
+      "-H",
+      "Content-Type: application/json",
+      "--data",
+      `{"state":"${newState}"}`,
+      "http://localhost/vm/state",
+    ], { allowFailure: true });
   }
 
   private vmDir(name: string): string {
@@ -484,14 +524,23 @@ export function lookupDhcpLease(mac: string, leasesPath = "/var/db/dhcpd_leases"
 function lookupArpIpByMac(mac: string): string | null {
   const normalized = normalizeMac(mac);
   const output = runCapture("arp", ["-an"], { allowFailure: true }).stdout;
+  let found: string | null = null;
   for (const line of output.split(/\r?\n/)) {
     const match = /\(([0-9.]+)\)\s+at\s+([0-9a-f:]+)/i.exec(line);
     if (match?.[1] === undefined || match[2] === undefined || normalizeMac(match[2]) !== normalized) {
       continue;
     }
-    return match[1];
+    found = match[1];
   }
-  return null;
+  return found;
+}
+
+function currentFirewallControlIp(controlMac: string): string | null {
+  const leaseIp = lookupDhcpLease(controlMac, undefined, "firewall-vm");
+  if (leaseIp !== null && arpHasIpForMac(leaseIp, controlMac)) {
+    return leaseIp;
+  }
+  return lookupArpIpByMac(controlMac);
 }
 
 function arpHasIpForMac(ip: string, mac: string): boolean {
@@ -510,10 +559,41 @@ function normalizeMac(mac: string): string {
 function processIsRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  const stat = runCapture("ps", ["-o", "stat=", "-p", String(pid)], { allowFailure: true }).stdout.trim();
+  return stat.length === 0 || !stat.startsWith("Z");
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "TERM");
+  } catch {
+    return;
+  }
+  if (await waitForProcessExit(pid, 100, 100)) {
+    return;
+  }
+  try {
+    process.kill(pid, "KILL");
+  } catch {
+    // The process may have exited between the last poll and SIGKILL.
+    return;
+  }
+  if (!await waitForProcessExit(pid, 50, 100)) {
+    throw new Error(`process ${String(pid)} did not exit after SIGKILL`);
+  }
+}
+
+async function waitForProcessExit(pid: number, attempts: number, intervalMs: number): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!processIsRunning(pid)) {
+      return true;
+    }
+    await Bun.sleep(intervalMs);
+  }
+  return !processIsRunning(pid);
 }
 
 function dhcpName(block: string): string | null {

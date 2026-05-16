@@ -43,7 +43,7 @@ jobs:
         run: bun run lint
 
       - name: Run TypeScript unit tests
-        run: bun test
+        run: bun run test
 
       - name: Check remaining shell syntax
         run: bash -n completions/rootcell.bash images/scripts/build-release.sh images/scripts/validate-dist.sh

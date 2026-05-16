@@ -78,23 +78,6 @@ jobs:
         with:
           github_access_token: ''
 
-      - name: Generate throwaway CI CA
-        run: |
-          mkdir -p pki
-          chmod 0700 pki
-          openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout pki/agent-vm-ca.key \
-            -out pki/agent-vm-ca-cert.pem \
-            -days 1 \
-            -subj "/CN=agent-vm CI proxy CA" \
-            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
-            -addext "keyUsage=critical,keyCertSign,cRLSign" \
-            >/dev/null 2>&1
-          cat pki/agent-vm-ca.key pki/agent-vm-ca-cert.pem > pki/agent-vm-ca.pem
-          chmod 0600 pki/agent-vm-ca.key pki/agent-vm-ca.pem
-          chmod 0644 pki/agent-vm-ca-cert.pem
-          git add -f pki/agent-vm-ca-cert.pem
-
       - name: Evaluate flake outputs
         run: |
           nix eval --raw .#nixosConfigurations.agent-vm.config.system.build.toplevel.drvPath

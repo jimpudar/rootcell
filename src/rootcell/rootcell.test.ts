@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import { parseRootcellArgs } from "./args.ts";
 import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
@@ -15,19 +16,42 @@ import {
   imageForRole,
   ROOTCELL_GUEST_API_VERSION,
   ROOTCELL_IMAGE_SCHEMA_VERSION,
+  RootcellImageManifestSchema,
 } from "./images.ts";
 import { forgetKnownHost, sshConfig } from "./transports/proxyjump-ssh.ts";
 import { dnsmasqAllowlistConfig, generatedLineCount } from "../bin/reload.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ParsedRootcellRunArgs, RootcellInstance } from "./types.ts";
+import {
+  ParsedRootcellRunArgsSchema,
+  RootcellConfigSchema,
+  RootcellInstanceSchema,
+  SecretMappingSchema,
+  type ParsedRootcellRunArgs,
+  type RootcellInstance,
+} from "./types.ts";
+
+const EmptyStringArraySchema = z.array(z.string()).length(0);
+const DefaultSpyOptionsSchema = z.object({
+  raw: z.literal(false),
+  dedupe: z.literal(true),
+  tui: z.literal(false),
+}).strict();
 
 const ignoreLog = (): void => undefined;
 
+function expectRunArgs(value: ParsedRootcellRunArgs): void {
+  expect(value).toEqual(expect.schemaMatching(ParsedRootcellRunArgsSchema));
+}
+
 describe("rootcell argument parsing", () => {
   test("parses known subcommands", () => {
-    expect(runArgs(["provision"])).toEqual({
+    const parsed = runArgs(["provision"]);
+    expectRunArgs(parsed);
+    expect(parsed.rest).toEqual(expect.schemaMatching(EmptyStringArraySchema));
+    expect(parsed.spyOptions).toEqual(expect.schemaMatching(DefaultSpyOptionsSchema));
+    expect(parsed).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "provision",
@@ -38,21 +62,27 @@ describe("rootcell argument parsing", () => {
   });
 
   test("parses lifecycle subcommands", () => {
-    expect(runArgs(["list"])).toEqual({
+    const list = runArgs(["list"]);
+    expectRunArgs(list);
+    expect(list).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "list",
       rest: [],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(runArgs(["stop", "--instance", "dev"])).toEqual({
+    const stop = runArgs(["stop", "--instance", "dev"]);
+    expectRunArgs(stop);
+    expect(stop).toEqual({
       kind: "run",
       instanceName: "dev",
       subcommand: "stop",
       rest: [],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(runArgs(["remove", "--instance=dev"])).toEqual({
+    const remove = runArgs(["remove", "--instance=dev"]);
+    expectRunArgs(remove);
+    expect(remove).toEqual({
       kind: "run",
       instanceName: "dev",
       subcommand: "remove",
@@ -62,14 +92,18 @@ describe("rootcell argument parsing", () => {
   });
 
   test("parses pass-through guest commands", () => {
-    expect(runArgs(["--", "nix", "flake", "update"])).toEqual({
+    const explicit = runArgs(["--", "nix", "flake", "update"]);
+    expectRunArgs(explicit);
+    expect(explicit).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "",
       rest: ["nix", "flake", "update"],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(runArgs(["pi", "--model", "sonnet"])).toEqual({
+    const implicit = runArgs(["pi", "--model", "sonnet"]);
+    expectRunArgs(implicit);
+    expect(implicit).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "",
@@ -79,21 +113,27 @@ describe("rootcell argument parsing", () => {
   });
 
   test("parses instance flags in any command position", () => {
-    expect(runArgs(["--instance", "dev", "provision"])).toEqual({
+    const beforeCommand = runArgs(["--instance", "dev", "provision"]);
+    expectRunArgs(beforeCommand);
+    expect(beforeCommand).toEqual({
       kind: "run",
       instanceName: "dev",
       subcommand: "provision",
       rest: [],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(runArgs(["allow", "--instance=dev"])).toEqual({
+    const afterCommand = runArgs(["allow", "--instance=dev"]);
+    expectRunArgs(afterCommand);
+    expect(afterCommand).toEqual({
       kind: "run",
       instanceName: "dev",
       subcommand: "allow",
       rest: [],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
-    expect(runArgs(["pi", "--instance", "dev", "--model", "sonnet"])).toEqual({
+    const passThrough = runArgs(["pi", "--instance", "dev", "--model", "sonnet"]);
+    expectRunArgs(passThrough);
+    expect(passThrough).toEqual({
       kind: "run",
       instanceName: "dev",
       subcommand: "",
@@ -108,7 +148,9 @@ describe("rootcell argument parsing", () => {
   });
 
   test("parses spy flags", () => {
-    expect(runArgs(["spy", "--tui", "--raw", "--no-dedupe"])).toEqual({
+    const parsed = runArgs(["spy", "--tui", "--raw", "--no-dedupe"]);
+    expectRunArgs(parsed);
+    expect(parsed).toEqual({
       kind: "run",
       instanceName: "default",
       subcommand: "spy",
@@ -156,7 +198,9 @@ describe("environment parsing", () => {
   });
 
   test("validates secret mappings", () => {
-    expect(parseSecretMappings("AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key\n")).toEqual([
+    const mappings = parseSecretMappings("AWS_BEARER_TOKEN_BEDROCK=aws-bedrock-api-key\n");
+    expect(mappings).toEqual(expect.schemaMatching(z.array(SecretMappingSchema)));
+    expect(mappings).toEqual([
       { envName: "AWS_BEARER_TOKEN_BEDROCK", service: "aws-bedrock-api-key" },
     ]);
     expect(() => parseSecretMappings("1BAD=service\n")).toThrow("invalid secret environment variable name");
@@ -165,7 +209,10 @@ describe("environment parsing", () => {
   });
 
   test("builds config from instance state", () => {
-    const config = buildConfig("/repo", {}, fakeInstance("dev"));
+    const instance = fakeInstance("dev");
+    expect(instance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
+    const config = buildConfig("/repo", {}, instance);
+    expect(config).toEqual(expect.schemaMatching(RootcellConfigSchema));
     expect(config.agentVm).toBe("agent-dev");
     expect(config.firewallVm).toBe("firewall-dev");
     expect(config.firewallIp).toBe("192.168.109.2");
@@ -227,6 +274,35 @@ describe("VM and network providers", () => {
   test("macOS vfkit provider exposes host-control and hostless-private attachments", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
+    expect(plan).toEqual(expect.schemaMatching(z.object({
+      provider: z.literal("macos-vfkit"),
+      guest: z.object({
+        firewallIp: z.literal("192.168.109.2"),
+        agentIp: z.literal("192.168.109.3"),
+        networkPrefix: z.literal(24),
+        agentPrivateInterface: z.literal("enp0s1"),
+        firewallPrivateInterface: z.literal("enp0s2"),
+        firewallEgressInterface: z.literal("enp0s1"),
+        firewallControlInterface: z.literal("enp0s1"),
+      }).strict(),
+      vms: z.object({
+        agent: z.object({
+          kind: z.literal("vfkit"),
+          role: z.literal("agent"),
+          privateMac: z.string().regex(/^52:54:00:/),
+          privateSocketPath: z.string(),
+          useNat: z.literal(false),
+        }).strict(),
+        firewall: z.object({
+          kind: z.literal("vfkit"),
+          role: z.literal("firewall"),
+          privateMac: z.string().regex(/^52:54:00:/),
+          privateSocketPath: z.string(),
+          controlMac: z.string().regex(/^52:54:00:/),
+          useNat: z.literal(true),
+        }).strict(),
+      }).strict(),
+    }).strict()));
     expect(plan.provider).toBe("macos-vfkit");
     expect(plan.guest).toEqual({
       firewallIp: "192.168.109.2",
@@ -348,7 +424,7 @@ describe("VM and network providers", () => {
   });
 
   test("vfkit state parser validates running state shape", () => {
-    expect(parseVfkitVmState({
+    const state = parseVfkitVmState({
       provider: "vfkit",
       name: "firewall-dev",
       role: "firewall",
@@ -360,7 +436,21 @@ describe("VM and network providers", () => {
       privateMac: "52:54:00:00:00:01",
       controlMac: "52:54:00:00:00:02",
       firewallControlIp: "192.168.64.2",
-    }).firewallControlIp).toBe("192.168.64.2");
+    });
+    expect(state).toEqual(expect.schemaMatching(z.object({
+      provider: z.literal("vfkit"),
+      name: z.literal("firewall-dev"),
+      role: z.literal("firewall"),
+      pid: z.literal(123),
+      diskPath: z.literal("/vm/disk.raw"),
+      efiVariableStorePath: z.literal("/vm/efi"),
+      restSocketPath: z.literal("/vm/rest.sock"),
+      logPath: z.literal("/vm/serial.log"),
+      privateMac: z.literal("52:54:00:00:00:01"),
+      controlMac: z.literal("52:54:00:00:00:02"),
+      firewallControlIp: z.literal("192.168.64.2"),
+    }).strict()));
+    expect(state.firewallControlIp).toBe("192.168.64.2");
     expect(() => parseVfkitVmState({ provider: "unknown" })).toThrow("provider mismatch");
   });
 
@@ -409,6 +499,7 @@ describe("VM and network providers", () => {
 describe("rootcell image manifest contract", () => {
   test("parses compatible manifest and selects role images", () => {
     const manifest = parseRootcellImageManifest(fakeManifest());
+    expect(manifest).toEqual(expect.schemaMatching(RootcellImageManifestSchema));
     expect(manifest.schemaVersion).toBe(ROOTCELL_IMAGE_SCHEMA_VERSION);
     expect(manifest.guestApiVersion).toBe(ROOTCELL_GUEST_API_VERSION);
     expect(imageForRole(manifest, "agent").fileName).toBe("agent.raw.zst");
@@ -450,11 +541,13 @@ describe("instance state", () => {
       const envA: NodeJS.ProcessEnv = {};
       loadDotEnv(join(repo, ".rootcell/instances/default/.env"), envA);
       const defaultInstance = loadRootcellInstance(repo, "default", envA);
+      expect(defaultInstance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
 
       seedRootcellInstanceFiles(repo, "dev", ignoreLog);
       const envB: NodeJS.ProcessEnv = {};
       loadDotEnv(join(repo, ".rootcell/instances/dev/.env"), envB);
       const devInstance = loadRootcellInstance(repo, "dev", envB);
+      expect(devInstance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
 
       expect(defaultInstance.state.subnet).toBe("192.168.100.0");
       expect(defaultInstance.state.firewallIp).toBe("192.168.100.2");

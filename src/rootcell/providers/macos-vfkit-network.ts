@@ -227,7 +227,13 @@ async function waitForProcessExit(pid: number, attempts: number, intervalMs: num
     if (!processIsRunning(pid)) {
       return true;
     }
-    await Bun.sleep(intervalMs);
+    await sleep(intervalMs);
   }
   return !processIsRunning(pid);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, milliseconds);
+  });
 }

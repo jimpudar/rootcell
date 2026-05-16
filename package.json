@@ -5,8 +5,12 @@
   "scripts": {
     "completions": "SHELL=/bin/bash ./rootcell completion | sed '${/^$/d;}' > completions/rootcell.bash && SHELL=/bin/zsh ./rootcell completion | sed '${/^$/d;}' > completions/rootcell.zsh",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.{ts,js,mjs,cjs}\" eslint.config.ts",
-    "test": "bun test"
+    "lint": "eslint \"src/**/*.{ts,js,mjs,cjs}\" eslint.config.ts vitest.config.ts",
+    "test": "vitest --project unit --run",
+    "test:integration": "vitest --project integration --run",
+    "test:integration:clean": "./test --clean",
+    "test:integration:teardown": "./test --teardown",
+    "test:all": "vitest --run"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -16,7 +20,8 @@
     "eslint": "10.3.0",
     "jiti": "2.7.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.59.3"
+    "typescript-eslint": "8.59.3",
+    "vitest": "^4.0.0"
   },
   "dependencies": {
     "yargs": "18.0.0",

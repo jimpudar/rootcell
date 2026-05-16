@@ -243,7 +243,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
       if (result.status === 0) {
         return;
       }
-      await Bun.sleep(500);
+      await sleep(500);
     }
     throw new Error(`timeout waiting for SSH transport to ${name}`);
   }
@@ -257,7 +257,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
       if (ip !== null) {
         return ip;
       }
-      Bun.sleepSync(500);
+      sleepSync(500);
     }
     throw new Error(`timeout waiting for DHCP lease for firewall control MAC ${network.controlMac}`);
   }
@@ -591,9 +591,21 @@ async function waitForProcessExit(pid: number, attempts: number, intervalMs: num
     if (!processIsRunning(pid)) {
       return true;
     }
-    await Bun.sleep(intervalMs);
+    await sleep(intervalMs);
   }
   return !processIsRunning(pid);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, milliseconds);
+  });
+}
+
+function sleepSync(milliseconds: number): void {
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, milliseconds);
 }
 
 function dhcpName(block: string): string | null {

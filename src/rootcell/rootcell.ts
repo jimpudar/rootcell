@@ -114,7 +114,7 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
   }, `invalid rootcell config for ${instance.name}`);
 }
 
-class RootcellApp<TAttachment extends VmNetworkAttachment> {
+export class RootcellApp<TAttachment extends VmNetworkAttachment> {
   private readonly networkPlan: NetworkPlan<TAttachment>;
 
   constructor(
@@ -239,7 +239,7 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
       if (running.length === 0) {
         return;
       }
-      await Bun.sleep(200);
+      await sleep(200);
     }
     const statuses = await Promise.all(this.vmEntries().map(async (entry) => ({
       name: entry.name,
@@ -744,6 +744,12 @@ Then re-run.
 
 function messageFromUnknown(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolveSleep) => {
+    setTimeout(resolveSleep, milliseconds);
+  });
 }
 
 function hasInstanceFlag(args: readonly string[]): boolean {

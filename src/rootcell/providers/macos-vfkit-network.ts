@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { z } from "zod";
 import { resolveHostTool } from "../host-tools.ts";
+import { runCapture } from "../process.ts";
 import { NonEmptyStringSchema, PositiveSafeIntegerSchema } from "../schema.ts";
 import type { RootcellConfig } from "../types.ts";
 import type { NetworkPlan, NetworkProvider, VmNetworkAttachment } from "./types.ts";
@@ -70,6 +71,20 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   preflight(): Promise<void> {
     this.ensurePython();
     return Promise.resolve();
+  }
+
+  async stop(): Promise<void> {
+    const state = this.readState();
+    if (state === null || !processIsRunning(state.pid)) {
+      return;
+    }
+    this.log(`stopping vfkit private link for instance '${this.config.instanceName}'...`);
+    await terminateProcess(state.pid);
+  }
+
+  async remove(): Promise<void> {
+    await this.stop();
+    rmSync(this.networkDir(), { recursive: true, force: true });
   }
 
   async ensureReady(input: {
@@ -175,4 +190,44 @@ export function macFor(config: RootcellConfig, role: string, name: string): stri
     digest[1] ?? 0,
     digest[2] ?? 0,
   ].map((octet) => octet.toString(16).padStart(2, "0")).join(":");
+}
+
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  const stat = runCapture("ps", ["-o", "stat=", "-p", String(pid)], { allowFailure: true }).stdout.trim();
+  return stat.length === 0 || !stat.startsWith("Z");
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "TERM");
+  } catch {
+    return;
+  }
+  if (await waitForProcessExit(pid, 100, 100)) {
+    return;
+  }
+  try {
+    process.kill(pid, "KILL");
+  } catch {
+    // The helper may have exited between the last poll and SIGKILL.
+    return;
+  }
+  if (!await waitForProcessExit(pid, 50, 100)) {
+    throw new Error(`process ${String(pid)} did not exit after SIGKILL`);
+  }
+}
+
+async function waitForProcessExit(pid: number, attempts: number, intervalMs: number): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!processIsRunning(pid)) {
+      return true;
+    }
+    await Bun.sleep(intervalMs);
+  }
+  return !processIsRunning(pid);
 }

@@ -126,6 +126,9 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
     .command(...rootcellSubcommand("provision"))
     .command(...rootcellSubcommand("allow"))
     .command(...rootcellSubcommand("pubkey"))
+    .command(...rootcellSubcommand("list"))
+    .command(...rootcellSubcommand("stop"))
+    .command(...rootcellSubcommand("remove"))
     .command(
       "spy",
       subcommandDescription("spy"),
@@ -162,6 +165,9 @@ function createParser(args: readonly string[]): Argv<GuestArgs & SpyArgs> {
     .example("$0 pi", "run pi inside the agent VM")
     .example("$0 -- nix flake update", "run any command inside the agent VM")
     .example("$0 --instance dev allow", "reload allowlists for the dev instance")
+    .example("$0 list", "list rootcell VMs and their current state")
+    .example("$0 stop --instance dev", "stop the dev instance VMs")
+    .example("$0 remove --instance dev", "delete the dev instance VM state")
     .completion("completion", "generate shell completion script", completion)
     .help()
     .wrap(Math.min(100, yargs().terminalWidth()))

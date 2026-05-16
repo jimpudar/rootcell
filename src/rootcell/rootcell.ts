@@ -10,10 +10,16 @@ import { dirname, join, resolve } from "node:path";
 import { parseRootcellArgs } from "./args.ts";
 import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
-import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import {
+  deriveVmNames,
+  listRootcellVmInstanceNames,
+  loadExistingRootcellInstance,
+  loadRootcellInstance,
+  seedRootcellInstanceFiles,
+} from "./instance.ts";
 import { commandExists, runCapture, runInherited } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import type { NetworkPlan, ProviderBundle, VmNetworkAttachment } from "./providers/types.ts";
+import type { NetworkPlan, ProviderBundle, VmNetworkAttachment, VmStatus } from "./providers/types.ts";
 import { parseSchema } from "./schema.ts";
 import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
 
@@ -38,8 +44,30 @@ const VM_FILES: VmFileSet = {
   ],
 };
 
+export interface VmListEntry {
+  readonly instance: string;
+  readonly vm: string;
+  readonly state: string;
+}
+
 function log(message: string): void {
   console.error(`rootcell: ${message}`);
+}
+
+export function formatVmList(entries: readonly VmListEntry[]): string {
+  if (entries.length === 0) {
+    return "No rootcell VMs found.\n";
+  }
+  const rows = [
+    ["INSTANCE", "VM", "STATE"],
+    ...entries.map((entry) => [entry.instance, entry.vm, entry.state]),
+  ];
+  const widths = rows[0]?.map((_, column) => Math.max(...rows.map((row) => row[column]?.length ?? 0))) ?? [];
+  return `${rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd()).join("\n")}\n`;
+}
+
+function statusText(status: VmStatus): string {
+  return status.state === "unexpected" ? `unexpected: ${status.detail}` : status.state;
 }
 
 function shellQuote(value: string): string {
@@ -97,6 +125,21 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
   }
 
   async runAfterEnvironment(subcommand: string, rest: readonly string[], spyOptions: SpyOptions): Promise<number> {
+    if (subcommand === "list") {
+      process.stdout.write(formatVmList(await this.listVms()));
+      return 0;
+    }
+    if (subcommand === "stop") {
+      await this.stopVms();
+      process.stdout.write(`stopped ${this.config.instanceName}\n`);
+      return 0;
+    }
+    if (subcommand === "remove") {
+      await this.removeVms();
+      process.stdout.write(`stopped ${this.config.instanceName}, deleted state\n`);
+      return 0;
+    }
+
     this.writeNetworkLocalNix();
 
     if (subcommand === "pubkey") {
@@ -150,6 +193,59 @@ class RootcellApp<TAttachment extends VmNetworkAttachment> {
         "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
       ],
     });
+  }
+
+  async listVms(): Promise<readonly VmListEntry[]> {
+    return await Promise.all(this.vmEntries().map(async (entry) => ({
+      instance: this.config.instanceName,
+      vm: entry.name,
+      state: statusText(await this.providers.vm.status(entry.name)),
+    })));
+  }
+
+  async stopVms(): Promise<void> {
+    for (const entry of this.vmEntries()) {
+      await this.providers.vm.forceStopIfRunning(entry.name);
+    }
+    await this.waitForVmsStopped();
+    await this.providers.network.stop();
+  }
+
+  async removeVms(): Promise<void> {
+    await this.stopVms();
+    for (const entry of this.vmEntries()) {
+      await this.providers.vm.remove(entry.name);
+    }
+    await this.providers.network.remove();
+  }
+
+  private vmEntries(): readonly [
+    { readonly role: "agent"; readonly name: string },
+    { readonly role: "firewall"; readonly name: string },
+  ] {
+    return [
+      { role: "agent", name: this.config.agentVm },
+      { role: "firewall", name: this.config.firewallVm },
+    ];
+  }
+
+  private async waitForVmsStopped(): Promise<void> {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const statuses = await Promise.all(this.vmEntries().map(async (entry) => ({
+        name: entry.name,
+        status: await this.providers.vm.status(entry.name),
+      })));
+      const running = statuses.filter((entry) => entry.status.state === "running");
+      if (running.length === 0) {
+        return;
+      }
+      await Bun.sleep(200);
+    }
+    const statuses = await Promise.all(this.vmEntries().map(async (entry) => ({
+      name: entry.name,
+      status: statusText(await this.providers.vm.status(entry.name)),
+    })));
+    throw new Error(`timed out waiting for VMs to stop: ${statuses.map((entry) => `${entry.name}=${entry.status}`).join(", ")}`);
   }
 
   private writeNetworkLocalNix(): void {
@@ -650,6 +746,80 @@ function messageFromUnknown(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function hasInstanceFlag(args: readonly string[]): boolean {
+  for (const arg of args) {
+    if (arg === "--") {
+      return false;
+    }
+    if (arg === "--instance" || arg === "-i" || arg.startsWith("--instance=") || (arg.startsWith("-i") && arg.length > 2)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function appForInstance(repoDir: string, env: NodeJS.ProcessEnv, instance: RootcellInstance): RootcellApp<VmNetworkAttachment> {
+  const config = buildConfig(repoDir, env, instance);
+  return new RootcellApp(config, createProviderBundle(config, log));
+}
+
+async function runListCommand(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  instanceName: string,
+  explicitInstance: boolean,
+): Promise<number> {
+  if (explicitInstance) {
+    const instance = loadExistingRootcellInstance(repoDir, instanceName);
+    if (instance === null) {
+      process.stdout.write(formatVmList(missingVmEntries(instanceName)));
+      return 0;
+    }
+    process.stdout.write(formatVmList(await appForInstance(repoDir, env, instance).listVms()));
+    return 0;
+  }
+
+  const entries: VmListEntry[] = [];
+  for (const name of listRootcellVmInstanceNames(repoDir)) {
+    const instance = loadExistingRootcellInstance(repoDir, name);
+    if (instance !== null) {
+      entries.push(...await appForInstance(repoDir, env, instance).listVms());
+    }
+  }
+  process.stdout.write(formatVmList(entries));
+  return 0;
+}
+
+async function runLifecycleCommand(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  command: "stop" | "remove",
+  instanceName: string,
+): Promise<number> {
+  const instance = loadExistingRootcellInstance(repoDir, instanceName);
+  if (instance === null) {
+    log(`rootcell instance '${instanceName}' not found; run ./rootcell --instance ${instanceName} first.`);
+    return 1;
+  }
+  const app = appForInstance(repoDir, env, instance);
+  if (command === "stop") {
+    await app.stopVms();
+    process.stdout.write(`stopped ${instanceName}\n`);
+    return 0;
+  }
+  await app.removeVms();
+  process.stdout.write(`stopped ${instanceName}, deleted state\n`);
+  return 0;
+}
+
+function missingVmEntries(instanceName: string): readonly VmListEntry[] {
+  const vmNames = deriveVmNames(instanceName);
+  return [
+    { instance: instanceName, vm: vmNames.agentVm, state: "missing" },
+    { instance: instanceName, vm: vmNames.firewallVm, state: "missing" },
+  ];
+}
+
 export async function rootcellMain(args: readonly string[], importMetaPath: string): Promise<number> {
   const repoDir = repoDirFromImportMeta(importMetaPath);
   let parsed;
@@ -665,6 +835,13 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
   }
 
   try {
+    if (parsed.subcommand === "list") {
+      return await runListCommand(repoDir, process.env, parsed.instanceName, hasInstanceFlag(args));
+    }
+    if (parsed.subcommand === "stop" || parsed.subcommand === "remove") {
+      return await runLifecycleCommand(repoDir, process.env, parsed.subcommand, parsed.instanceName);
+    }
+
     seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
     loadDotEnv(join(repoDir, ".rootcell", "instances", parsed.instanceName, ".env"), process.env);
     const instance = loadRootcellInstance(repoDir, parsed.instanceName, process.env);

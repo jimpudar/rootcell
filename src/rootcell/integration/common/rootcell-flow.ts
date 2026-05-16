@@ -128,6 +128,40 @@ export function createIntegrationFlow(importMetaUrl: string): IntegrationFlow {
   return new IntegrationFlow(selectedIntegrationProvider(), importMetaUrl);
 }
 
+const provisionedFlows = new Map<string, Promise<IntegrationFlow>>();
+
+export async function createProvisionedIntegrationFlow<TAttachment extends VmNetworkAttachment>(
+  provider: IntegrationProviderSpec<TAttachment>,
+  importMetaUrl: string,
+): Promise<IntegrationFlow<TAttachment>> {
+  const existing = provisionedFlows.get(provider.id);
+  if (existing !== undefined) {
+    return await existing as IntegrationFlow<TAttachment>;
+  }
+
+  const provisioning = provisionFlow(provider, importMetaUrl);
+  provisionedFlows.set(provider.id, provisioning as Promise<IntegrationFlow>);
+  try {
+    return await provisioning;
+  } catch (error) {
+    provisionedFlows.delete(provider.id);
+    throw error;
+  }
+}
+
+export async function createProvisionedSelectedIntegrationFlow(importMetaUrl: string): Promise<IntegrationFlow> {
+  return await createProvisionedIntegrationFlow(selectedIntegrationProvider(), importMetaUrl);
+}
+
+async function provisionFlow<TAttachment extends VmNetworkAttachment>(
+  provider: IntegrationProviderSpec<TAttachment>,
+  importMetaUrl: string,
+): Promise<IntegrationFlow<TAttachment>> {
+  const flow = new IntegrationFlow(provider, importMetaUrl);
+  await flow.provision();
+  return flow;
+}
+
 function integrationLog(message: string): void {
   console.error(`test: ${message}`);
 }

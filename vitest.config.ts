@@ -19,6 +19,7 @@ export default defineConfig({
           environment: "node",
           include: ["src/rootcell/integration/**/*.integration.test.ts"],
           fileParallelism: false,
+          isolate: false,
           testTimeout: 30 * 60_000,
           hookTimeout: 30 * 60_000,
         },

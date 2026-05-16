@@ -689,7 +689,7 @@ sudo env \\
   GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
   REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
   nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
-nix run nixpkgs#home-manager -- switch --flake .#${this.config.guestUser}
+nix run .#home-manager -- switch --flake .#${this.config.guestUser}
 `]);
     await this.providers.vm.forgetSshHostKey?.(this.config.agentVm);
     log("agent provisioning complete.");

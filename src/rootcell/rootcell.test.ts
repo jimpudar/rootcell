@@ -11,6 +11,7 @@ import { createProviderBundle } from "./providers/factory.ts";
 import { getMacAddressFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
 import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
 import {
+  ImageStore,
   imageDownloadUrl,
   parseRootcellImageManifest,
   imageForRole,
@@ -525,6 +526,24 @@ describe("rootcell image manifest contract", () => {
       ...fakeManifest(),
       rootcellCliContract: { min: 2, max: 2 },
     })).toThrow("CLI image contract");
+  });
+
+  test("caches parsed manifests by image source", () => {
+    const repo = makeInstanceRepo();
+    const imageDir = join(repo, "images");
+    mkdirSync(imageDir, { recursive: true });
+    writeFileSync(join(imageDir, "manifest.json"), `${JSON.stringify(fakeManifest())}\n`, "utf8");
+    try {
+      const config = buildConfig("/repo", { ROOTCELL_IMAGE_DIR: imageDir }, fakeInstance("dev"));
+      expect(new ImageStore(config, ignoreLog).loadManifest().rootcellSourceRevision).toBe("abc123");
+      writeFileSync(join(imageDir, "manifest.json"), `${JSON.stringify({
+        ...fakeManifest(),
+        guestApiVersion: 99,
+      })}\n`, "utf8");
+      expect(new ImageStore(config, ignoreLog).loadManifest().rootcellSourceRevision).toBe("abc123");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

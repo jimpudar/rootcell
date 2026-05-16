@@ -97,10 +97,10 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
     for (const vm of input.affectedVms) {
       await input.stopVmIfRunning(vm);
     }
-    this.startPrivateLink();
+    await this.startPrivateLink();
   }
 
-  private startPrivateLink(): void {
+  private async startPrivateLink(): Promise<void> {
     mkdirSync(this.networkDir(), { recursive: true, mode: 0o700 });
     rmSync(this.firewallSocketPath(), { force: true });
     rmSync(this.agentSocketPath(), { force: true });
@@ -123,6 +123,21 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
       firewallSocketPath: this.firewallSocketPath(),
       agentSocketPath: this.agentSocketPath(),
     }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await this.waitForPrivateLinkReady(child.pid);
+  }
+
+  private async waitForPrivateLinkReady(pid: number): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (existsSync(this.firewallSocketPath()) && existsSync(this.agentSocketPath())) {
+        return;
+      }
+      if (!processIsRunning(pid)) {
+        throw new Error("rootcell vfkit L2 helper exited before creating sockets");
+      }
+      await sleep(50);
+    }
+    await terminateProcess(pid);
+    throw new Error("timeout waiting for rootcell vfkit L2 helper sockets");
   }
 
   private privateLinkRunning(): boolean {
@@ -204,7 +219,7 @@ function processIsRunning(pid: number): boolean {
 
 async function terminateProcess(pid: number): Promise<void> {
   try {
-    process.kill(pid, "TERM");
+    process.kill(pid, "SIGTERM");
   } catch {
     return;
   }
@@ -212,7 +227,7 @@ async function terminateProcess(pid: number): Promise<void> {
     return;
   }
   try {
-    process.kill(pid, "KILL");
+    process.kill(pid, "SIGKILL");
   } catch {
     // The helper may have exited between the last poll and SIGKILL.
     return;

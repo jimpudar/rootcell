@@ -568,7 +568,7 @@ function processIsRunning(pid: number): boolean {
 
 async function terminateProcess(pid: number): Promise<void> {
   try {
-    process.kill(pid, "TERM");
+    process.kill(pid, "SIGTERM");
   } catch {
     return;
   }
@@ -576,7 +576,7 @@ async function terminateProcess(pid: number): Promise<void> {
     return;
   }
   try {
-    process.kill(pid, "KILL");
+    process.kill(pid, "SIGKILL");
   } catch {
     // The process may have exited between the last poll and SIGKILL.
     return;

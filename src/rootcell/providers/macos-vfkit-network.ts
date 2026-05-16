@@ -51,15 +51,15 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
         agent: {
           kind: "vfkit",
           role: "agent",
-          privateMac: macFor(this.config, "agent", "private"),
+          privateMac: getMacAddressFor(this.config, "agent", "private"),
           privateSocketPath: this.agentSocketPath(),
           useNat: false,
         },
         firewall: {
           kind: "vfkit",
           role: "firewall",
-          controlMac: macFor(this.config, "firewall", "control"),
-          privateMac: macFor(this.config, "firewall", "private"),
+          controlMac: getMacAddressFor(this.config, "firewall", "control"),
+          privateMac: getMacAddressFor(this.config, "firewall", "private"),
           privateSocketPath: this.firewallSocketPath(),
           useNat: true,
         },
@@ -163,7 +163,7 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   }
 }
 
-export function macFor(config: RootcellConfig, role: string, name: string): string {
+export function getMacAddressFor(config: RootcellConfig, role: string, name: string): string {
   const digest = createHash("sha256")
     .update(`${config.repoDir}:${config.instanceName}:${role}:${name}`)
     .digest();

@@ -14,7 +14,8 @@ import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "
 import { commandExists, runCapture, runInherited } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import type { NetworkPlan, ProviderBundle, VmNetworkAttachment } from "./providers/types.ts";
-import type { RootcellConfig, RootcellInstance, SpyOptions, VmFileSet } from "./types.ts";
+import { parseSchema } from "./schema.ts";
+import { RootcellConfigSchema, type RootcellConfig, type RootcellInstance, type SpyOptions, type VmFileSet } from "./types.ts";
 
 const GUEST_USER = "luser";
 
@@ -64,7 +65,7 @@ function repoDirFromImportMeta(importMetaPath: string): string {
 
 export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: RootcellInstance): RootcellConfig {
   const vmNames = deriveVmNames(instance.name);
-  return {
+  return parseSchema(RootcellConfigSchema, {
     repoDir,
     instanceName: instance.name,
     instanceDir: instance.dir,
@@ -82,7 +83,7 @@ export function buildConfig(repoDir: string, env: NodeJS.ProcessEnv, instance: R
     networkPrefix: String(instance.state.networkPrefix),
     imageManifestUrl: env.ROOTCELL_IMAGE_MANIFEST_URL ?? DEFAULT_IMAGE_MANIFEST_URL,
     ...(env.ROOTCELL_IMAGE_DIR === undefined || env.ROOTCELL_IMAGE_DIR.length === 0 ? {} : { imageDir: env.ROOTCELL_IMAGE_DIR }),
-  };
+  }, `invalid rootcell config for ${instance.name}`);
 }
 
 class RootcellApp<TAttachment extends VmNetworkAttachment> {

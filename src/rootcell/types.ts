@@ -1,81 +1,128 @@
 import type { SpawnSyncReturns } from "node:child_process";
-import type { RootcellSubcommand } from "./metadata.ts";
+import { z } from "zod";
+import { isRootcellSubcommand, type RootcellSubcommand } from "./metadata.ts";
+import {
+  EnvironmentVariableNameSchema,
+  NonEmptyStringSchema,
+  NonNegativeSafeIntegerSchema,
+} from "./schema.ts";
 
-export interface CommandResult {
-  readonly status: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+export const CommandResultSchema = z.object({
+  status: NonNegativeSafeIntegerSchema,
+  stdout: z.string(),
+  stderr: z.string(),
+});
 
-export interface InheritedCommandResult {
-  readonly status: number;
-}
+export type CommandResult = Readonly<z.infer<typeof CommandResultSchema>>;
 
-export interface RootcellConfig {
-  readonly repoDir: string;
-  readonly instanceName: string;
-  readonly instanceDir: string;
-  readonly envPath: string;
-  readonly secretsPath: string;
-  readonly proxyDir: string;
-  readonly pkiDir: string;
-  readonly generatedDir: string;
-  readonly agentVm: string;
-  readonly firewallVm: string;
-  readonly guestUser: string;
-  readonly guestRepoDir: string;
-  readonly firewallIp: string;
-  readonly agentIp: string;
-  readonly networkPrefix: string;
-  readonly imageManifestUrl: string;
-  readonly imageDir?: string;
-}
+export const InheritedCommandResultSchema = z.object({
+  status: NonNegativeSafeIntegerSchema,
+});
 
-export interface ParsedRootcellRunArgs {
-  readonly kind: "run";
-  readonly instanceName: string;
-  readonly subcommand: RootcellSubcommand | "";
-  readonly rest: readonly string[];
-  readonly spyOptions: SpyOptions;
-}
+export type InheritedCommandResult = Readonly<z.infer<typeof InheritedCommandResultSchema>>;
 
-export interface ParsedRootcellHandledArgs {
-  readonly kind: "handled";
-  readonly status: number;
-}
+export const RootcellConfigSchema = z.object({
+  repoDir: NonEmptyStringSchema,
+  instanceName: NonEmptyStringSchema,
+  instanceDir: NonEmptyStringSchema,
+  envPath: NonEmptyStringSchema,
+  secretsPath: NonEmptyStringSchema,
+  proxyDir: NonEmptyStringSchema,
+  pkiDir: NonEmptyStringSchema,
+  generatedDir: NonEmptyStringSchema,
+  agentVm: NonEmptyStringSchema,
+  firewallVm: NonEmptyStringSchema,
+  guestUser: NonEmptyStringSchema,
+  guestRepoDir: NonEmptyStringSchema,
+  firewallIp: NonEmptyStringSchema,
+  agentIp: NonEmptyStringSchema,
+  networkPrefix: NonEmptyStringSchema,
+  imageManifestUrl: NonEmptyStringSchema,
+  imageDir: NonEmptyStringSchema.optional(),
+});
+
+export type RootcellConfig = Readonly<z.infer<typeof RootcellConfigSchema>>;
+
+export const SpyOptionsSchema = z.object({
+  raw: z.boolean(),
+  dedupe: z.boolean(),
+  tui: z.boolean(),
+});
+
+export type SpyOptions = Readonly<z.infer<typeof SpyOptionsSchema>>;
+
+const RootcellSubcommandOrEmptySchema = z.custom<RootcellSubcommand | "">(
+  (value) => value === "" || (typeof value === "string" && isRootcellSubcommand(value)),
+  { message: "must be a rootcell subcommand" },
+);
+
+export const ParsedRootcellRunArgsSchema = z.object({
+  kind: z.literal("run"),
+  instanceName: NonEmptyStringSchema,
+  subcommand: RootcellSubcommandOrEmptySchema,
+  rest: z.array(z.string()),
+  spyOptions: SpyOptionsSchema,
+});
+
+type ParsedRootcellRunArgsOutput = z.infer<typeof ParsedRootcellRunArgsSchema>;
+
+export type ParsedRootcellRunArgs = Readonly<
+  Omit<ParsedRootcellRunArgsOutput, "rest" | "spyOptions"> & {
+    readonly rest: readonly string[];
+    readonly spyOptions: SpyOptions;
+  }
+>;
+
+export const ParsedRootcellHandledArgsSchema = z.object({
+  kind: z.literal("handled"),
+  status: NonNegativeSafeIntegerSchema,
+});
+
+export type ParsedRootcellHandledArgs = Readonly<z.infer<typeof ParsedRootcellHandledArgsSchema>>;
+
+export const ParsedRootcellArgsSchema = z.discriminatedUnion("kind", [
+  ParsedRootcellRunArgsSchema,
+  ParsedRootcellHandledArgsSchema,
+]);
 
 export type ParsedRootcellArgs = ParsedRootcellRunArgs | ParsedRootcellHandledArgs;
 
-export interface InstanceState {
-  readonly schemaVersion: 1;
-  readonly subnet: string;
-  readonly networkPrefix: 24;
-  readonly firewallIp: string;
-  readonly agentIp: string;
-}
+export const InstanceStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  subnet: NonEmptyStringSchema,
+  networkPrefix: z.literal(24),
+  firewallIp: NonEmptyStringSchema,
+  agentIp: NonEmptyStringSchema,
+});
 
-export interface RootcellInstance {
-  readonly name: string;
-  readonly dir: string;
-  readonly envPath: string;
-  readonly secretsPath: string;
-  readonly proxyDir: string;
-  readonly pkiDir: string;
-  readonly generatedDir: string;
-  readonly statePath: string;
-  readonly state: InstanceState;
-}
+export type InstanceState = Readonly<z.infer<typeof InstanceStateSchema>>;
 
-export interface SpyOptions {
-  readonly raw: boolean;
-  readonly dedupe: boolean;
-  readonly tui: boolean;
-}
+export const SecretMappingSchema = z.object({
+  envName: EnvironmentVariableNameSchema,
+  service: NonEmptyStringSchema,
+});
 
-export interface SecretMapping {
-  readonly envName: string;
-  readonly service: string;
-}
+export type SecretMapping = Readonly<z.infer<typeof SecretMappingSchema>>;
+
+export const RootcellInstanceSchema = z.object({
+  name: NonEmptyStringSchema,
+  dir: NonEmptyStringSchema,
+  envPath: NonEmptyStringSchema,
+  secretsPath: NonEmptyStringSchema,
+  proxyDir: NonEmptyStringSchema,
+  pkiDir: NonEmptyStringSchema,
+  generatedDir: NonEmptyStringSchema,
+  statePath: NonEmptyStringSchema,
+  state: InstanceStateSchema,
+});
+
+type RootcellInstanceOutput = z.infer<typeof RootcellInstanceSchema>;
+
+export type RootcellInstance = Readonly<
+  Omit<RootcellInstanceOutput, "state"> & {
+    readonly state: InstanceState;
+  }
+>;
 
 export interface VmFileSet {
   readonly agent: readonly string[];

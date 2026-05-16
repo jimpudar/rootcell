@@ -1,7 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { SpawnOptions, SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import type { CommandResult, InheritedCommandResult } from "./types.ts";
+import {
+  CommandResultSchema,
+  InheritedCommandResultSchema,
+  type CommandResult,
+  type InheritedCommandResult,
+} from "./types.ts";
 
 export interface RunOptions {
   readonly cwd?: string;
@@ -48,7 +53,7 @@ export function runCapture(command: string, args: readonly string[], options: Ru
   if (!options.allowFailure && status !== 0) {
     throw new CommandError(command, args, output);
   }
-  return output;
+  return CommandResultSchema.parse(output);
 }
 
 export function runInherited(command: string, args: readonly string[], options: InheritOptions = {}): InheritedCommandResult {
@@ -62,7 +67,7 @@ export function runInherited(command: string, args: readonly string[], options: 
   if (!options.allowFailure && status !== 0) {
     throw new CommandError(command, args, { status, stdout: "", stderr: "" });
   }
-  return { status };
+  return InheritedCommandResultSchema.parse({ status });
 }
 
 export function runInputInherited(command: string, args: readonly string[], stdin: string, options: InheritOptions = {}): InheritedCommandResult {
@@ -77,7 +82,7 @@ export function runInputInherited(command: string, args: readonly string[], stdi
   if (!options.allowFailure && status !== 0) {
     throw new CommandError(command, args, { status, stdout: "", stderr: "" });
   }
-  return { status };
+  return InheritedCommandResultSchema.parse({ status });
 }
 
 export function runStdoutToFile(command: string, args: readonly string[], path: string, options: InheritOptions = {}): InheritedCommandResult {
@@ -93,7 +98,7 @@ export function runStdoutToFile(command: string, args: readonly string[], path: 
     if (!options.allowFailure && status !== 0) {
       throw new CommandError(command, args, { status, stdout: "", stderr: "" });
     }
-    return { status };
+    return InheritedCommandResultSchema.parse({ status });
   } finally {
     closeSync(fd);
   }

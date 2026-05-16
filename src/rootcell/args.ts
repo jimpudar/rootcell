@@ -3,7 +3,14 @@ import yargs from "yargs/yargs";
 import type { Argv, ArgumentsCamelCase } from "yargs";
 import { isRootcellSubcommand, ROOTCELL_SUBCOMMANDS, type RootcellSubcommand } from "./metadata.ts";
 import { validateInstanceName } from "./instance.ts";
-import type { ParsedRootcellArgs, SpyOptions } from "./types.ts";
+import { parseSchema } from "./schema.ts";
+import {
+  ParsedRootcellHandledArgsSchema,
+  ParsedRootcellRunArgsSchema,
+  SpyOptionsSchema,
+  type ParsedRootcellArgs,
+  type SpyOptions,
+} from "./types.ts";
 
 const DEFAULT_SPY_OPTIONS: SpyOptions = { raw: false, dedupe: true, tui: false };
 
@@ -170,20 +177,24 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
     || firstToken === "completion"
     || argv["get-yargs-completions"] !== undefined
   ) {
-    return { kind: "handled", status: 0 };
+    return parseSchema(ParsedRootcellHandledArgsSchema, { kind: "handled", status: 0 }, "invalid parsed rootcell args");
   }
 
   const subcommand = parsedSubcommand(argv);
   if (subcommand !== undefined) {
-    return {
+    return parseSchema(ParsedRootcellRunArgsSchema, {
       kind: "run",
       instanceName: instanceName(argv),
       subcommand,
       rest: [],
       spyOptions: subcommand === "spy"
-        ? { raw: argv.raw ?? false, dedupe: argv.dedupe ?? true, tui: argv.tui ?? false }
+        ? parseSchema(SpyOptionsSchema, {
+          raw: argv.raw ?? false,
+          dedupe: argv.dedupe ?? true,
+          tui: argv.tui ?? false,
+        }, "invalid spy options")
         : DEFAULT_SPY_OPTIONS,
-    };
+    }, "invalid parsed rootcell args");
   }
 
   const afterTerminator = stringArray(argv["--"]);
@@ -192,13 +203,13 @@ export function parseRootcellArgs(args: readonly string[]): ParsedRootcellArgs {
   if (first?.startsWith("-") === true && afterTerminator.length === 0) {
     throw new Error(`Unknown argument: ${first.replace(/^-+/, "")}`);
   }
-  return {
+  return parseSchema(ParsedRootcellRunArgsSchema, {
     kind: "run",
     instanceName: instanceName(argv),
     subcommand: "",
     rest,
     spyOptions: DEFAULT_SPY_OPTIONS,
-  };
+  }, "invalid parsed rootcell args");
 }
 
 function fail(message: string, error: Error): never {

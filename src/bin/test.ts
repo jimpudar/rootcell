@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
+import { z } from "zod";
 import { runCapture } from "../rootcell/process.ts";
 
 const REPO_DIR = findRepoDir(import.meta.path);
@@ -9,6 +10,7 @@ const AGENT_VM_NAME = "agent-test";
 const FIREWALL_VM_NAME = "firewall-test";
 const FIREWALL_IP = "192.168.109.2";
 const AGENT_IP = "192.168.109.3";
+const JsonObjectSchema = z.record(z.string(), z.unknown());
 
 interface TestCase {
   readonly name: string;
@@ -112,7 +114,8 @@ function vfkitPrivateLinkStatePath(): string {
 }
 
 function readJson(path: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  return JsonObjectSchema.parse(raw);
 }
 
 function pidFromState(path: string): number | null {

@@ -33,19 +33,15 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
 
   async provision(): Promise<void> {
     await this.provider.preflight();
+    this.writeDefaultAllowlists();
     const status = await this.app.runAfterEnvironment("provision", [], defaultSpyOptions);
     if (status !== 0) {
       throw new Error(`rootcell provision failed with status ${String(status)}`);
     }
-    await this.syncDefaultAllowlists();
   }
 
   async syncDefaultAllowlists(): Promise<void> {
-    this.log("syncing .defaults allowlists into test firewall...");
-    mkdirSync(this.config.proxyDir, { recursive: true, mode: 0o700 });
-    for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
-      copyFileSync(join(this.repoDir, "proxy", `${file}.defaults`), join(this.config.proxyDir, file));
-    }
+    this.writeDefaultAllowlists();
     const status = await this.app.runAfterEnvironment("allow", [], defaultSpyOptions);
     if (status !== 0) {
       throw new Error(`rootcell allow failed with status ${String(status)}`);
@@ -62,6 +58,14 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
     await this.syncDefaultAllowlists();
     await this.agentSh("true");
     await this.expectVmStates("running");
+  }
+
+  private writeDefaultAllowlists(): void {
+    this.log("writing .defaults allowlists for test firewall...");
+    mkdirSync(this.config.proxyDir, { recursive: true, mode: 0o700 });
+    for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+      copyFileSync(join(this.repoDir, "proxy", `${file}.defaults`), join(this.config.proxyDir, file));
+    }
   }
 
   async expectVmStates(state: "missing" | "running" | "stopped"): Promise<void> {

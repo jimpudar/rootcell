@@ -32,7 +32,7 @@ export async function expectPrivateNetworkRouting(flow: IntegrationFlow): Promis
   await flow.agentSh(`ip -4 -o addr show ${network.agentPrivateInterface} | grep -q '${network.agentIp}/'`);
   await flow.agentSh(`ip route show default | grep -q '^default via ${network.firewallIp} dev ${network.agentPrivateInterface}'`);
   await flow.firewallSh(`ip -4 -o addr show ${network.firewallPrivateInterface} | grep -q '${network.firewallIp}/'`);
-  await flow.agentSh(`dig @${network.firewallIp} +short +time=5 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'`);
+  await flow.agentSh(`dig @${network.firewallIp} +short +time=3 +tries=1 github.com | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'`);
 }
 
 export async function expectGuestTools(flow: IntegrationFlow): Promise<void> {
@@ -41,10 +41,10 @@ export async function expectGuestTools(flow: IntegrationFlow): Promise<void> {
 }
 
 export async function expectProxyPolicy(flow: IntegrationFlow): Promise<void> {
-  await flow.agentSh("code=$(curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\" https://github.com) && [[ \"$code\" =~ ^[23] ]]");
-  await flow.agentShFails("curl -sS --max-time 5 -o /dev/null http://github.com");
-  await flow.agentShFails("curl -sS --max-time 10 -o /dev/null https://example.com");
-  await flow.agentShFails("curl -sS --max-time 10 -o /dev/null https://pythonhosted.org");
+  await flow.agentSh("code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w \"%{http_code}\" https://github.com) && [[ \"$code\" =~ ^[23] ]]");
+  await flow.agentShFails("curl -sS --connect-timeout 2 --max-time 3 -o /dev/null http://github.com");
+  await flow.agentShFails("curl -sS --connect-timeout 3 --max-time 5 -o /dev/null https://example.com");
+  await flow.agentShFails("curl -sS --connect-timeout 3 --max-time 5 -o /dev/null https://pythonhosted.org");
   await expectDenySniNoBypassWithInsecureCurl(flow);
   await expectDenySniNoMitmproxyCert(flow);
   await expectAllowedHttpsCertIsOurs(flow);
@@ -53,33 +53,33 @@ export async function expectProxyPolicy(flow: IntegrationFlow): Promise<void> {
 }
 
 export async function expectDnsPolicy(flow: IntegrationFlow): Promise<void> {
-  await flow.agentSh("dig +short +time=5 +tries=1 github.com | grep -qE \"^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$\"");
-  await flow.agentSh("dig example.com +time=5 +tries=1 2>&1 | grep -q \"status: REFUSED\"");
+  await flow.agentSh("dig +short +time=3 +tries=1 github.com | grep -qE \"^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$\"");
+  await flow.agentSh("dig example.com +time=3 +tries=1 2>&1 | grep -q \"status: REFUSED\"");
 }
 
 export async function expectSshPolicy(flow: IntegrationFlow): Promise<void> {
   await flow.agentSh("ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -T git@github.com 2>&1 | grep -qE \"(successfully authenticated|Permission denied|does not provide shell)\"");
-  await flow.agentShFails("ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 22 root@1.1.1.1");
+  await flow.agentShFails("ssh -o BatchMode=yes -o ConnectTimeout=5 -T -p 22 root@1.1.1.1");
 }
 
 async function expectDenySniNoBypassWithInsecureCurl(flow: IntegrationFlow): Promise<void> {
-  const result = await flow.agentShCapture("curl -sk --max-time 10 -o /dev/null -w \"%{size_download}\" https://pythonhosted.org");
+  const result = await flow.agentShCapture("curl -sk --connect-timeout 3 --max-time 5 -o /dev/null -w \"%{size_download}\" https://pythonhosted.org");
   const size = result.stdout.trim() || "0";
   expect(size).toBe("0");
 }
 
 async function expectDenySniNoMitmproxyCert(flow: IntegrationFlow): Promise<void> {
-  const result = await flow.agentShCapture("curl -skv --max-time 10 -o /dev/null https://pythonhosted.org 2>&1 | grep -i issuer");
+  const result = await flow.agentShCapture("curl -skv --connect-timeout 3 --max-time 5 -o /dev/null https://pythonhosted.org 2>&1 | grep -i issuer");
   expect(result.stdout).not.toMatch(/mitmproxy/i);
 }
 
 async function expectAllowedHttpsCertIsOurs(flow: IntegrationFlow): Promise<void> {
-  const issuer = await flow.agentSh("curl -sSv --max-time 10 -o /dev/null https://github.com 2>&1 | grep -i \"issuer:\" | head -n1");
+  const issuer = await flow.agentSh("curl -sSv --connect-timeout 5 --max-time 10 -o /dev/null https://github.com 2>&1 | grep -i \"issuer:\" | head -n1");
   expect(issuer).toContain("agent-vm proxy CA");
 }
 
 async function expectSniPinnedToUpstreamIdentity(flow: IntegrationFlow): Promise<void> {
-  const result = await flow.agentShCapture("curl -sk --max-time 10 -D - --resolve github.com:443:1.1.1.1 https://github.com");
+  const result = await flow.agentShCapture("curl -sk --connect-timeout 3 --max-time 5 -D - --resolve github.com:443:1.1.1.1 https://github.com");
   if (result.stdout.length === 0) {
     return;
   }
@@ -88,7 +88,7 @@ async function expectSniPinnedToUpstreamIdentity(flow: IntegrationFlow): Promise
 }
 
 async function expectHostMustAgreeWithSni(flow: IntegrationFlow): Promise<void> {
-  const result = await flow.agentShCapture("curl -sS --max-time 10 -o /dev/null -w \"%{http_code}\" -H \"Host: objects.githubusercontent.com\" https://api.github.com/");
+  const result = await flow.agentShCapture("curl -sS --connect-timeout 3 --max-time 5 -o /dev/null -w \"%{http_code}\" -H \"Host: objects.githubusercontent.com\" https://api.github.com/");
   const code = result.stdout.trim();
   expect(code === "000" || code.length === 0).toBe(true);
 }

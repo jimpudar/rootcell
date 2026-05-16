@@ -7,7 +7,7 @@ import { buildConfig } from "./rootcell.ts";
 import { deriveVmNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
-import { macFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
+import { getMacAddressFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
 import { vfkitArgs, parseVfkitVmState, lookupDhcpLease, vfkitCloudInitUserData } from "./providers/vfkit.ts";
 import {
   imageDownloadUrl,
@@ -225,8 +225,8 @@ describe("VM and network providers", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
     const otherWorktree = buildConfig("/other-repo", {}, fakeInstance("dev"));
 
-    expect(macFor(config, "firewall", "control")).toBe(macFor(config, "firewall", "control"));
-    expect(macFor(config, "firewall", "control")).not.toBe(macFor(otherWorktree, "firewall", "control"));
+    expect(getMacAddressFor(config, "firewall", "control")).toBe(getMacAddressFor(config, "firewall", "control"));
+    expect(getMacAddressFor(config, "firewall", "control")).not.toBe(getMacAddressFor(otherWorktree, "firewall", "control"));
   });
 
   test("vfkit args include EFI, cloud-init, expected NICs, and no VSOCK", () => {

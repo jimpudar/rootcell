@@ -23,10 +23,17 @@ export async function runIntegrationCli(args: readonly string[], importMetaUrl: 
     await provider.removeTestState(repoDir);
   }
 
-  return runInherited("bun", ["run", "test:integration"], {
+  const status = runInherited("bun", ["run", "test:integration"], {
     cwd: repoDir,
     allowFailure: true,
   }).status;
+  try {
+    await provider.stopTestResources(repoDir);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return status === 0 ? 1 : status;
+  }
+  return status;
 }
 
 function parseArgs(args: readonly string[]): ParsedIntegrationCliArgs {

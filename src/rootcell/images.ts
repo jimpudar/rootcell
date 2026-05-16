@@ -64,6 +64,8 @@ export type RootcellImageManifest = Readonly<
   }
 >;
 
+const manifestCache = new Map<string, RootcellImageManifest>();
+
 export class ImageStore {
   private zstdBin = "";
 
@@ -93,10 +95,23 @@ export class ImageStore {
   }
 
   loadManifest(): RootcellImageManifest {
+    const cacheKey = this.manifestCacheKey();
+    const cached = manifestCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
     const manifest = this.config.imageDir === undefined
       ? JSON.parse(runCapture("curl", ["-fsSL", this.config.imageManifestUrl]).stdout) as unknown
       : JSON.parse(readFileSync(join(this.config.imageDir, "manifest.json"), "utf8")) as unknown;
-    return parseRootcellImageManifest(manifest);
+    const parsed = parseRootcellImageManifest(manifest);
+    manifestCache.set(cacheKey, parsed);
+    return parsed;
+  }
+
+  private manifestCacheKey(): string {
+    return this.config.imageDir === undefined
+      ? `url:${this.config.imageManifestUrl}`
+      : `dir:${this.config.imageDir}`;
   }
 
   private ensureCompressed(entry: RootcellImageEntry, path: string): void {

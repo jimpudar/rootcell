@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { AGENT_IP, AGENT_VM_NAME, FIREWALL_VM_NAME, LIFECYCLE_INSTANCE, TEST_INSTANCE } from "../../common/fixtures.ts";
-import { IntegrationFlow } from "../../common/rootcell-flow.ts";
+import { createProvisionedIntegrationFlow, IntegrationFlow } from "../../common/rootcell-flow.ts";
 import { selectedIntegrationProvider } from "../../common/provider-spec.ts";
 import type { VfkitNetworkAttachment } from "../../../providers/macos-vfkit-network.ts";
 import { macOsVfkitIntegrationProvider, prepareLifecycleInstance, processIsRunning, readJson, stopLifecycleProcesses, vfkitPrivateLinkStatePath, vfkitStatePath } from "./provider.ts";
@@ -14,8 +14,7 @@ let flow: IntegrationFlow<VfkitNetworkAttachment>;
 
 describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: false }, () => {
   beforeAll(async () => {
-    flow = new IntegrationFlow(macOsVfkitIntegrationProvider, import.meta.url);
-    await flow.provision();
+    flow = await createProvisionedIntegrationFlow(macOsVfkitIntegrationProvider, import.meta.url);
   });
 
   test("exposes vfkit network attachment shape through the provider bundle", () => {
@@ -65,6 +64,8 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
     expect(config).toContain("Host rootcell-firewall");
     expect(config).toContain("Host rootcell-agent");
     expect(config).toContain("ProxyJump rootcell-firewall");
+    expect(config).toContain("ControlMaster auto");
+    expect(config).toContain("ControlPersist 60s");
   });
 
   test("supports host SSH to firewall and agent through the vfkit transport", () => {

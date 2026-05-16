@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runAsyncInherited, runCapture, runInherited } from "../process.ts";
@@ -90,6 +91,8 @@ export class ProxyJumpSshTransport implements GuestTransport {
     const endpoints = this.endpoints();
     const sshDir = join(this.config.instanceDir, "ssh");
     mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+    const controlDir = sshControlDir(this.config.instanceDir);
+    mkdirSync(controlDir, { recursive: true, mode: 0o700 });
     const path = join(sshDir, "config");
     const content = sshConfig({
       user: this.config.guestUser,
@@ -97,6 +100,7 @@ export class ProxyJumpSshTransport implements GuestTransport {
       agentHost: endpoints.agentHost,
       identityPath: endpoints.identityPath,
       knownHostsPath: endpoints.knownHostsPath,
+      controlPath: join(controlDir, "%C"),
     });
     writeFileSync(path, content, { encoding: "utf8", mode: 0o600 });
     return path;
@@ -141,13 +145,22 @@ export function sshConfig(input: {
   readonly agentHost: string;
   readonly identityPath: string;
   readonly knownHostsPath: string;
+  readonly controlPath?: string;
 }): string {
+  const multiplexing = input.controlPath === undefined
+    ? []
+    : [
+      "  ControlMaster auto",
+      "  ControlPersist 60s",
+      `  ControlPath ${input.controlPath}`,
+    ];
   return [
     "Host rootcell-firewall",
     `  HostName ${input.firewallHost}`,
     `  User ${input.user}`,
     `  IdentityFile ${input.identityPath}`,
     `  UserKnownHostsFile ${input.knownHostsPath}`,
+    ...multiplexing,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
     "  BatchMode yes",
@@ -162,6 +175,7 @@ export function sshConfig(input: {
     "  ProxyJump rootcell-firewall",
     `  IdentityFile ${input.identityPath}`,
     `  UserKnownHostsFile ${input.knownHostsPath}`,
+    ...multiplexing,
     "  StrictHostKeyChecking accept-new",
     "  IdentitiesOnly yes",
     "  BatchMode yes",
@@ -171,6 +185,11 @@ export function sshConfig(input: {
     "  LogLevel ERROR",
     "",
   ].join("\n");
+}
+
+function sshControlDir(instanceDir: string): string {
+  const hash = createHash("sha256").update(instanceDir).digest("hex").slice(0, 16);
+  return join("/tmp", `rootcell-ssh-${hash}`);
 }
 
 function remoteCommand(command: readonly string[], options: ExecOptions): string {

@@ -117,6 +117,7 @@ JSON
       }) // {
         aarch64-linux = {
           inherit agentImage firewallImage builderImage rootcellImages;
+          "home-manager" = home-manager.packages.${system}.home-manager;
           default = rootcellImages;
         };
       };

@@ -9,14 +9,13 @@ import {
   expectSpyWiring,
   expectSshPolicy,
 } from "./assertions.ts";
-import { createIntegrationFlow, type IntegrationFlow } from "./rootcell-flow.ts";
+import { createProvisionedSelectedIntegrationFlow, type IntegrationFlow } from "./rootcell-flow.ts";
 
 let flow: IntegrationFlow;
 
 describe("provider contract integration flow", { concurrent: false }, () => {
   beforeAll(async () => {
-    flow = createIntegrationFlow(import.meta.url);
-    await flow.provision();
+    flow = await createProvisionedSelectedIntegrationFlow(import.meta.url);
   });
 
   test("reports provider-neutral VM list state", async () => {

@@ -75,25 +75,10 @@ export function processIsRunning(pid: number): boolean {
 
 export async function stopPidFromState(path: string): Promise<void> {
   const pid = pidFromState(path);
-  if (pid === null || !processIsRunning(pid)) {
+  if (pid === null) {
     return;
   }
-  try {
-    process.kill(pid, "TERM");
-  } catch {
-    return;
-  }
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (!processIsRunning(pid)) {
-      return;
-    }
-    await sleep(100);
-  }
-  try {
-    process.kill(pid, "KILL");
-  } catch {
-    // The process exited between polls.
-  }
+  await stopPid(pid);
 }
 
 export async function stopVfkitTestResources(repoDir: string): Promise<void> {
@@ -101,6 +86,7 @@ export async function stopVfkitTestResources(repoDir: string): Promise<void> {
   await stopPidFromState(vfkitStatePath(repoDir, FIREWALL_VM_NAME));
   await stopPidFromState(vfkitPrivateLinkStatePath(repoDir));
   await stopLifecycleProcesses(repoDir);
+  await stopDetachedVfkitTestProcesses(repoDir);
 }
 
 export async function removeVfkitTestState(repoDir: string): Promise<void> {
@@ -122,6 +108,59 @@ export async function stopLifecycleProcesses(repoDir: string): Promise<void> {
     vfkitPrivateLinkStatePath(repoDir, LIFECYCLE_INSTANCE),
   ]) {
     await stopPidFromState(path);
+  }
+}
+
+async function stopDetachedVfkitTestProcesses(repoDir: string): Promise<void> {
+  for (const pid of vfkitTestProcessPids(repoDir)) {
+    await stopPid(pid);
+  }
+}
+
+function vfkitTestProcessPids(repoDir: string): readonly number[] {
+  const needles = [TEST_INSTANCE, LIFECYCLE_INSTANCE]
+    .map((instance) => join(repoDir, ".rootcell", "instances", instance, "vfkit"));
+  const ps = runCapture("ps", ["-axo", "pid=,command="], { allowFailure: true });
+  if (ps.status !== 0) {
+    return [];
+  }
+  const pids = new Set<number>();
+  for (const line of ps.stdout.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match === null) {
+      continue;
+    }
+    const pid = Number(match[1]);
+    const command = match[2] ?? "";
+    if (pid === process.pid || !Number.isSafeInteger(pid)) {
+      continue;
+    }
+    if (needles.some((needle) => command.includes(needle))) {
+      pids.add(pid);
+    }
+  }
+  return [...pids];
+}
+
+async function stopPid(pid: number): Promise<void> {
+  if (!processIsRunning(pid)) {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!processIsRunning(pid)) {
+      return;
+    }
+    await sleep(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // The process exited between polls.
   }
 }
 

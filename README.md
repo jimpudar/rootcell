@@ -97,9 +97,9 @@ You need:
 The default published VM images target Apple Silicon hosts. Intel hosts require
 the architecture changes described in [Changing Architecture](#changing-architecture).
 
-The agent and firewall are still NixOS VMs, and provisioning runs Nix inside
-those VMs. Host-side Nix is optional for end users: use it only if you choose
-the Nix setup below or if you are building release images.
+The agent and firewall run as NixOS VMs. Provisioning uses Nix inside those VMs,
+but you do not need Nix installed on the macOS host unless you choose the Nix
+setup below or build release images.
 
 ### Homebrew Setup
 

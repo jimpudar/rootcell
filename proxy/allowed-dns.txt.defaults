@@ -1,6 +1,8 @@
 # DNS suffixes the firewall VM's dnsmasq will resolve. Matched as a
 # suffix (so `github.com` here lets `api.github.com` resolve too —
 # dnsmasq's `server=/HOST/...` syntax matches HOST and all subdomains).
+# A single `*` line forwards all DNS names; keep that for temporary
+# bootstrap/testing cases rather than normal checked-in policy.
 # Anything else returns 0.0.0.0 via the catch-all.
 
 amazonaws.com

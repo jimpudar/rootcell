@@ -4,6 +4,13 @@
 # Python's fnmatch — i.e. `*.example.com` matches `foo.example.com` but
 # NOT `example.com`. List both forms when you want both.
 #
+# Optional scoped form:
+#   host_glob python_regex
+#
+# The regex is matched against `METHOD /path?query` after TLS is
+# decrypted. Example for HTTPS Git access to selected GitHub repos only:
+#   github.com ^(GET|POST) /owner/(repo1|repo2)\.git/
+#
 # Edit this file then run `./rootcell allow` to hot-reload (no rebuild).
 
 # AWS Bedrock (the agent's LLM provider)

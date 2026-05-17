@@ -1,7 +1,9 @@
 # SSH hostnames the agent VM may reach via `git clone git@host:...` and
 # similar. The agent's SSH client is configured (in home.nix) to tunnel
 # through the firewall via HTTP CONNECT, so mitmproxy's addon checks the
-# CONNECT host:22 against this list.
+# CONNECT host:22 against this host-glob list. Git-over-SSH cannot be
+# scoped to individual repositories because the firewall cannot see inside
+# the encrypted SSH session.
 
 github.com
 gitlab.com

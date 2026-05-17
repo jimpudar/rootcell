@@ -215,9 +215,18 @@ $EDITOR .rootcell/instances/default/proxy/allowed-https.txt
 ./rootcell allow
 ```
 
+`allowed-https.txt` can also scope a host with a Python regular expression
+matched against `METHOD /path?query`. For example, this allows HTTPS Git access
+to only three repositories on `github.com`:
+
+```text
+github.com ^(GET|POST) /rootcell-ai/(rootcell|docs|website)\.git/
+```
+
 For Git over SSH, add the host to the instance's `allowed-ssh.txt` and run
 `./rootcell allow`. GitHub, GitLab, Bitbucket, and Azure DevOps are included in the
-default SSH allowlist.
+default SSH allowlist. Git-over-SSH cannot be scoped to individual repositories
+by HTTPS request regexes because the firewall only sees `CONNECT host:22`.
 
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
@@ -282,7 +291,8 @@ What it does:
 - Keeps the host filesystem out of the VM by avoiding default host mounts.
 - Gives the agent VM only a private link to the firewall VM.
 - Routes DNS through a suffix allowlist.
-- Intercepts HTTPS at the firewall and checks both TLS SNI and HTTP `Host`.
+- Intercepts HTTPS at the firewall and checks TLS SNI, HTTP `Host`, and optional
+  request regexes.
 - Validates the upstream certificate before sending bytes onward.
 - Denies cleartext HTTP instead of allowlisting unauthenticated `Host` headers.
 

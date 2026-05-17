@@ -49,11 +49,18 @@ You can't change the allowlist from in here. Ask the user:
 
 > Please add `<hostname>` to the relevant file(s) on the host:
 > - `proxy/allowed-https.txt` — HTTPS only (TLS SNI, `fnmatch` globs;
->   `*.example.com` matches subdomains, not the apex). Cleartext HTTP
+>   `*.example.com` matches subdomains, not the apex). A line may also
+>   include a Python regex after the host glob; it matches
+>   `METHOD /path?query`, e.g.
+>   `github.com ^(GET|POST) /owner/(repo1|repo2)\.git/`. Cleartext HTTP
 >   is denied at the firewall and can't be allowlisted.
-> - `proxy/allowed-ssh.txt` — SSH CONNECT-host (same glob format).
+> - `proxy/allowed-ssh.txt` — SSH CONNECT-host (host glob format only;
+>   Git-over-SSH cannot be scoped to individual repositories because the
+>   firewall cannot see inside the encrypted SSH session).
 > - `proxy/allowed-dns.txt` — DNS suffixes (plain hostnames, suffix
->   match: `github.com` covers `api.github.com` too).
+>   match: `github.com` covers `api.github.com` too). A single `*`
+>   line forwards all DNS names and should be reserved for temporary
+>   bootstrap/testing policy.
 >
 > Then run `./rootcell allow` from the repo root (hot-reload, ~1s).
 

@@ -632,6 +632,12 @@ describe("reload helper", () => {
     expect(config).toBe("server=/example.com/1.1.1.1\nserver=/*.example.org/1.1.1.1\n");
     expect(generatedLineCount(config)).toBe(2);
   });
+
+  test("generates dnsmasq catch-all entry from wildcard line", () => {
+    const config = dnsmasqAllowlistConfig("  *  \n");
+    expect(config).toBe("server=/#/1.1.1.1\n");
+    expect(generatedLineCount(config)).toBe(1);
+  });
 });
 
 describe("completion files", () => {

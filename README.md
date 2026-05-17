@@ -1,4 +1,4 @@
-# rootcell
+![rootcell](assets/rootcell-banner.png)
 
 [![build](https://img.shields.io/github/actions/workflow/status/rootcell-ai/rootcell/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/rootcell-ai/rootcell/actions/workflows/ci.yml)
 

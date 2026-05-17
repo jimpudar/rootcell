@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDotEnv } from "../../env.ts";
 import { loadRootcellInstance, seedRootcellInstanceFiles } from "../../instance.ts";
@@ -33,15 +33,28 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
 
   async provision(): Promise<void> {
     await this.provider.preflight();
-    this.writeDefaultAllowlists();
-    const status = await this.app.runAfterEnvironment("provision", [], defaultSpyOptions);
-    if (status !== 0) {
-      throw new Error(`rootcell provision failed with status ${String(status)}`);
+    this.writeProvisioningAllowlists();
+    let provisioned = false;
+    try {
+      const status = await this.app.runAfterEnvironment("provision", [], defaultSpyOptions);
+      if (status !== 0) {
+        throw new Error(`rootcell provision failed with status ${String(status)}`);
+      }
+      provisioned = true;
+    } finally {
+      this.writeDefaultAllowlists();
+      if (provisioned) {
+        await this.reloadAllowlists();
+      }
     }
   }
 
   async syncDefaultAllowlists(): Promise<void> {
     this.writeDefaultAllowlists();
+    await this.reloadAllowlists();
+  }
+
+  async reloadAllowlists(): Promise<void> {
     const status = await this.app.runAfterEnvironment("allow", [], defaultSpyOptions);
     if (status !== 0) {
       throw new Error(`rootcell allow failed with status ${String(status)}`);
@@ -65,6 +78,14 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
     mkdirSync(this.config.proxyDir, { recursive: true, mode: 0o700 });
     for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
       copyFileSync(join(this.repoDir, "proxy", `${file}.defaults`), join(this.config.proxyDir, file));
+    }
+  }
+
+  private writeProvisioningAllowlists(): void {
+    this.log("writing wide-open allowlists for test provisioning...");
+    mkdirSync(this.config.proxyDir, { recursive: true, mode: 0o700 });
+    for (const file of ["allowed-https.txt", "allowed-ssh.txt", "allowed-dns.txt"]) {
+      writeFileSync(join(this.config.proxyDir, file), "*\n", "utf8");
     }
   }
 

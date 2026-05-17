@@ -12,7 +12,8 @@ Used by two mitmproxy instances on the firewall VM:
     terminates TLS using our per-deployment CA and opens a NEW TLS
     connection upstream, validating the upstream cert against the SNI.
     The request hook then enforces that the HTTP Host header agrees
-    with the SNI of the connection it arrived on.
+    with the SNI of the connection it arrived on, and applies any
+    request regex scoped to that host.
 
 Why full MITM (was: SNI passthrough): SNI alone doesn't bind the bytes
 to the upstream identity. A cooperating client could send
@@ -44,7 +45,11 @@ takes effect with no service restart.
 import fnmatch
 import logging
 import os
+import re
 import sys
+from dataclasses import dataclass
+from re import Pattern
+from typing import Optional
 from mitmproxy import ctx, exceptions, http, tls
 
 # mitmproxy ≥ 11 routes addon logging through stdlib `logging`. In our
@@ -75,7 +80,43 @@ ALLOW_SSH = "/etc/agent-vm/allowed-ssh.txt"
 REQUIRED_CONNECTION_STRATEGY = "lazy"
 
 
-class _Cache:
+@dataclass(frozen=True)
+class _HttpsRule:
+    host_glob: str
+    request_re: Optional[Pattern[str]] = None
+
+
+@dataclass(frozen=True)
+class _HttpsPolicy:
+    rules: tuple[_HttpsRule, ...]
+    valid: bool = True
+
+    def matching_rules(self, host: str) -> tuple[_HttpsRule, ...]:
+        if not self.valid:
+            return ()
+        normalized = host.lower()
+        return tuple(
+            rule
+            for rule in self.rules
+            if fnmatch.fnmatchcase(normalized, rule.host_glob)
+        )
+
+    def allows_host(self, host: str) -> bool:
+        return len(self.matching_rules(host)) > 0
+
+    def allows_request(self, host: str, request_target: str) -> bool:
+        rules = self.matching_rules(host)
+        if not rules:
+            return False
+
+        scoped_rules = tuple(rule for rule in rules if rule.request_re is not None)
+        if not scoped_rules:
+            return True
+
+        return any(rule.request_re.search(request_target) for rule in scoped_rules)
+
+
+class _StringSetCache:
     """Mtime-stamped file reader. Reloads when the file changes on disk."""
 
     def __init__(self) -> None:
@@ -98,13 +139,62 @@ class _Cache:
         return self.entries
 
 
-_https_cache = _Cache()
-_ssh_cache = _Cache()
+class _HttpsPolicyCache:
+    """Mtime-stamped HTTPS policy reader. Reloads when the file changes on disk."""
+
+    def __init__(self) -> None:
+        self.policy = _HttpsPolicy(())
+        self.mtime: float = -1.0
+
+    def get(self, path: str) -> _HttpsPolicy:
+        try:
+            mt = os.path.getmtime(path)
+        except FileNotFoundError:
+            return _HttpsPolicy(())
+        if mt != self.mtime:
+            self.policy = _parse_https_policy(path)
+            self.mtime = mt
+        return self.policy
+
+
+_https_cache = _HttpsPolicyCache()
+_ssh_cache = _StringSetCache()
+
+
+def _parse_https_policy(path: str) -> _HttpsPolicy:
+    rules: list[_HttpsRule] = []
+    with open(path) as f:
+        for line_number, raw_line in enumerate(f, 1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split(maxsplit=1)
+            host_glob = parts[0].lower()
+            if len(parts) == 1:
+                rules.append(_HttpsRule(host_glob))
+                continue
+
+            try:
+                request_re = re.compile(parts[1])
+            except re.error as exc:
+                logger.error(
+                    f"invalid HTTPS allowlist regex in {path}:{line_number}: {exc}"
+                )
+                return _HttpsPolicy((), valid=False)
+
+            rules.append(_HttpsRule(host_glob, request_re))
+
+    return _HttpsPolicy(tuple(rules))
 
 
 def _matches(host: str, patterns: set[str]) -> bool:
     host = host.lower()
     return any(fnmatch.fnmatchcase(host, p.lower()) for p in patterns)
+
+
+def _request_target(flow: http.HTTPFlow) -> str:
+    return f"{flow.request.method} {flow.request.path}"
 
 
 def _require_lazy_connection_strategy() -> None:
@@ -179,7 +269,7 @@ def tls_clienthello(data: tls.ClientHelloData) -> None:
     if not sni:
         _deny_tls(data, "sni=<missing>")
         return
-    if not _matches(sni, _https_cache.get(ALLOW_HTTPS)):
+    if not _https_cache.get(ALLOW_HTTPS).allows_host(sni):
         _deny_tls(data, f"sni={sni!r}")
         return
     # Allow → fall through. mitmproxy will terminate TLS using our CA
@@ -227,11 +317,14 @@ def request(flow: http.HTTPFlow) -> None:
         flow.kill()
         return
 
-    # Re-check Host against the allowlist. Redundant with tls_clienthello
-    # in the common case (host == sni, both allowlisted), but defends
-    # against any future relaxation of the SNI/Host equality rule.
-    if not _matches(host, _https_cache.get(ALLOW_HTTPS)):
-        logger.warning(f"DENY https host={host!r} (not in allowlist)")
+    # Re-check Host against the allowlist and any optional request regex.
+    # Host-only entries preserve the historical behavior. If a matching host
+    # has any scoped regex entries, one of those regexes must match.
+    target = _request_target(flow)
+    if not _https_cache.get(ALLOW_HTTPS).allows_request(host, target):
+        logger.warning(
+            f"DENY https host={host!r} target={target!r} (not in allowlist)"
+        )
         flow.kill()
         return
 

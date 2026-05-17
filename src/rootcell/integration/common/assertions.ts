@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatVmList } from "../../rootcell.ts";
 import { TEST_INSTANCE } from "./fixtures.ts";
@@ -50,6 +51,28 @@ export async function expectProxyPolicy(flow: IntegrationFlow): Promise<void> {
   await expectAllowedHttpsCertIsOurs(flow);
   await expectSniPinnedToUpstreamIdentity(flow);
   await expectHostMustAgreeWithSni(flow);
+}
+
+export async function expectHttpsRequestRegexPolicy(flow: IntegrationFlow): Promise<void> {
+  const httpsAllowlist = join(flow.config.proxyDir, "allowed-https.txt");
+  writeFileSync(
+    httpsAllowlist,
+    [
+      "# Provider contract fixture: scoped entries must dominate this broad host entry.",
+      "github.com",
+      "github.com ^GET /octocat/Hello-World(/|$)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  try {
+    await flow.reloadAllowlists();
+    await flow.agentSh("code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w \"%{http_code}\" https://github.com/octocat/Hello-World) && [[ \"$code\" =~ ^[23] ]]");
+    await flow.agentShFails("curl -sS --connect-timeout 3 --max-time 5 -o /dev/null https://github.com/octocat/Spoon-Knife");
+  } finally {
+    await flow.syncDefaultAllowlists();
+  }
 }
 
 export async function expectDnsPolicy(flow: IntegrationFlow): Promise<void> {

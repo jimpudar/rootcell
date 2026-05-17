@@ -10,10 +10,15 @@ export interface DnsmasqReloadPaths {
 export function dnsmasqAllowlistConfig(source: string): string {
   const lines: string[] = [];
   for (const rawLine of source.split(/\r?\n/)) {
-    if (rawLine.length === 0 || rawLine.startsWith("#")) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith("#")) {
       continue;
     }
-    lines.push(`server=/${rawLine}/1.1.1.1`);
+    if (line === "*") {
+      lines.push("server=/#/1.1.1.1");
+    } else {
+      lines.push(`server=/${line}/1.1.1.1`);
+    }
   }
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }

@@ -3,6 +3,7 @@ import {
   expectDnsPolicy,
   expectFirewallServices,
   expectGuestTools,
+  expectHttpsRequestRegexPolicy,
   expectPrivateNetworkRouting,
   expectProviderNeutralVmList,
   expectProxyPolicy,
@@ -41,6 +42,10 @@ describe("provider contract integration flow", { concurrent: false }, () => {
 
   test("enforces HTTPS proxy policy", async () => {
     await expectProxyPolicy(flow);
+  });
+
+  test("enforces HTTPS request regex policy", async () => {
+    await expectHttpsRequestRegexPolicy(flow);
   });
 
   test("enforces DNS policy", async () => {

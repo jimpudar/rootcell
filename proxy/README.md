@@ -94,7 +94,8 @@ next event (no restart). End-to-end takes ~1s.
 
 If a host needs both DNS resolution and HTTPS access (the common case),
 add it to **both** `allowed-dns.txt` and `allowed-https.txt`. dnsmasq
-matches by suffix, mitmproxy matches by `fnmatch` glob.
+matches by suffix, mitmproxy matches by `fnmatch` glob plus optional
+request regexes.
 
 ## File formats
 
@@ -103,23 +104,41 @@ matches by suffix, mitmproxy matches by `fnmatch` glob.
 HTTPS (TCP/443) only — matched against the TLS SNI in the ClientHello.
 Cleartext HTTP is denied at the firewall, not allowlisted.
 
-`fnmatch` glob, one per line. Comments start with `#`.
+Each non-comment line is either a host `fnmatch` glob or a host glob followed
+by a Python `re` regex. Host-only lines allow every HTTPS request for that
+host. Scoped lines allow the TLS handshake for that host, then require the
+regex to match `METHOD /path?query` after mitmproxy decrypts the request.
+
+If any scoped line matches a host, one of that host's scoped regexes must match
+the request. This keeps a broad host-only line from accidentally bypassing a
+more specific scoped rule for the same host. Comments start with `#`.
 
 ```
-api.github.com         # exact host
-*.githubusercontent.com   # one-segment wildcard
-bedrock-runtime.*.amazonaws.com   # middle wildcard
+# exact host
+api.github.com
+
+# one-segment wildcard
+*.githubusercontent.com
+
+# middle wildcard
+bedrock-runtime.*.amazonaws.com
+
+# HTTPS Git access for only three GitHub repositories
+github.com ^(GET|POST) /rootcell-ai/(rootcell|docs|website)\.git/
 ```
 
 ### `allowed-ssh.txt`
 
-Same format as `allowed-https.txt`, but matched against the CONNECT host
-on port 22 (SSH has no SNI, so we can only check the CONNECT line).
+Host glob format only, matched against the CONNECT host on port 22. SSH has no
+SNI, and this firewall does not decrypt SSH, so Git-over-SSH cannot be scoped
+to individual repositories with request regexes.
 
 ### `allowed-dns.txt`
 
 Plain hostnames (no globs). dnsmasq matches as a suffix, so listing
 `github.com` lets `api.github.com` and `codeload.github.com` resolve.
+A single `*` line forwards all DNS names; reserve that for temporary
+bootstrap/testing policy.
 
 ## Debugging
 
